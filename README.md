@@ -1,4 +1,4 @@
-# obsideo
+# obsideo-cloud
 
 **Encrypted storage we can't read.** Save, browse, and sync whatever you want
 from your terminal. Files are encrypted on your machine before they leave, so
@@ -6,15 +6,15 @@ Obsideo's gateway, coordinator, and storage providers only ever see ciphertext.
 Your data lands on three independent providers (RF=3).
 
 ```
-pip install obsideo
-obsideo login          # email -> 3 GB free
-obsideo                # open the shell
+pip install obsideo-cloud
+obsideo-cloud login    # email -> 3 GB free
+obsideo-cloud          # open the shell (or just 'obsideo')
 ```
 
 ## Get started
 
 ```
-$ obsideo login
+$ obsideo-cloud login
 Enter your email: you@example.com
 Check your email for a verification code.
 Enter verification code: 482913
@@ -24,7 +24,7 @@ You're all set. 3 GB free.
 Then either drop into the shell or run one-shot commands:
 
 ```
-$ obsideo
+$ obsideo-cloud
 obsideo:/ put ~/notes.txt
 obsideo:/ ls
   [file] notes.txt  1.2 KB
@@ -38,7 +38,7 @@ obsideo:/photos/ get cat.jpg ./downloaded.jpg
 
 | Command | Description |
 |---|---|
-| `obsideo login` | Sign up / log in with your email (3 GB free) |
+| `obsideo-cloud login` | Sign up / log in with your email (3 GB free) |
 | `ls [path]` | List files and folders |
 | `cd <path>` / `pwd` | Move around / show location |
 | `put <local> [name]` | Encrypt + upload a file |
