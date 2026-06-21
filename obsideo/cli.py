@@ -159,7 +159,21 @@ class ObsideoShell(cmd.Cmd):
 
     # ── put / upload ──────────────────────────────────────────────────────────
     def do_put(self, arg):
-        """Upload a local file. Usage: put <local_path> [remote_name] [--no-encrypt]"""
+        """Upload a file, or a whole folder recursively.
+
+        Each file is encrypted on your machine (AES-256-GCM) before upload, so
+        Obsideo only ever stores ciphertext. A folder uploads all of its files,
+        preserving structure under <name>/.
+
+        Usage:
+          put <local_path> [remote_name] [--no-encrypt]
+
+        Examples:
+          put report.pdf                store as report.pdf
+          put report.pdf q3.pdf         store under a different name
+          put ./photos                  upload the whole folder -> photos/...
+          put notes.txt --no-encrypt    upload as-is (NOT encrypted)
+        """
         if not self._require_login():
             return
         parts = _tokens(arg)
@@ -170,23 +184,53 @@ class ObsideoShell(cmd.Cmd):
         parts = [p for p in parts if p != "--no-encrypt"]
         local = Path(parts[0]).expanduser()
         if not local.exists():
-            print(f"File not found: {local}")
+            print(f"Not found: {local}")
             return
-        remote_name = parts[1] if len(parts) > 1 else local.name
-        key = self._resolve(remote_name)
-
-        raw = local.read_bytes()
+        base = parts[1] if len(parts) > 1 else local.name
         do_encrypt = config.load_config().get("encrypt", True) and not no_encrypt
+
+        if local.is_dir():
+            self._put_folder(local, base, do_encrypt)
+        else:
+            self._put_file(local, self._resolve(base), do_encrypt)
+
+    do_upload = do_put
+
+    def _put_file(self, local: Path, key: str, do_encrypt: bool):
+        try:
+            raw = local.read_bytes()
+        except OSError as e:
+            print(f"  Error reading {local}: {e}")
+            return
         body = crypto.encrypt(raw) if do_encrypt else raw
         verb = "Encrypting + uploading" if do_encrypt else "Uploading"
-        print(f"  {verb} {remote_name} ({_human(len(raw))})...")
+        print(f"  {verb} {key.rsplit('/', 1)[-1]} ({_human(len(raw))})...")
         try:
             storage.put(key, body)
             print(f"  Stored: /{key}")
         except Exception as e:
             print(f"  Error: {e}")
 
-    do_upload = do_put
+    def _put_folder(self, folder: Path, base: str, do_encrypt: bool):
+        files = [f for f in sorted(folder.rglob("*")) if f.is_file()]
+        if not files:
+            print(f"  (empty folder: {folder})")
+            return
+        verb = "Encrypting + uploading" if do_encrypt else "Uploading"
+        print(f"  {verb} folder {base}/ ({len(files)} file(s))...")
+        ok = 0
+        for f in files:
+            rel = f.relative_to(folder).as_posix()
+            key = self._resolve(f"{base}/{rel}")
+            try:
+                raw = f.read_bytes()
+                body = crypto.encrypt(raw) if do_encrypt else raw
+                storage.put(key, body)
+                ok += 1
+                print(f"    {rel}  ({_human(len(raw))})")
+            except Exception as e:
+                print(f"    {rel}  - FAILED: {e}")
+        print(f"  Stored {ok}/{len(files)} file(s) under /{self._resolve(base)}/")
 
     # ── get / download ────────────────────────────────────────────────────────
     def do_get(self, arg):

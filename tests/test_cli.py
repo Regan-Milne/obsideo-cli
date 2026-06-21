@@ -126,3 +126,28 @@ def test_put_quoted_spaced_path(shell, tmp_path):
     src.write_bytes(b"hello")
     sh.do_put(f'"{src}"')
     assert "my report.txt" in fake.objs
+
+
+def test_put_folder_recursive(shell, tmp_path):
+    sh, fake, tmp = shell
+    folder = tmp / "photos"
+    (folder / "sub").mkdir(parents=True)
+    (folder / "a.jpg").write_bytes(b"aaa")
+    (folder / "b.txt").write_bytes(b"bbb")
+    (folder / "sub" / "c.bin").write_bytes(b"ccc")
+
+    sh.do_put(str(folder))
+
+    # Structure preserved under photos/, all three files uploaded (encrypted).
+    assert set(fake.objs.keys()) == {"photos/a.jpg", "photos/b.txt", "photos/sub/c.bin"}
+    assert b"aaa" not in fake.objs["photos/a.jpg"]  # ciphertext, not plaintext
+
+
+def test_put_folder_into_cwd(shell, tmp_path):
+    sh, fake, tmp = shell
+    folder = tmp / "docs"
+    folder.mkdir()
+    (folder / "x.txt").write_bytes(b"x")
+    sh.do_cd("backup")
+    sh.do_put(str(folder))
+    assert "backup/docs/x.txt" in fake.objs
