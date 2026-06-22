@@ -9,6 +9,7 @@ leaves, so Obsideo can't read it. An interactive shell plus one-shot commands.
 """
 
 import cmd
+import os
 import shlex
 import sys
 import urllib.error
@@ -45,6 +46,119 @@ def _human(n: int | None) -> str:
         if f < 1024 or unit == "TB":
             return f"{f:.0f} {unit}" if unit == "B" else f"{f:.1f} {unit}"
         f /= 1024
+
+
+# ── Operator notices (server-driven broadcasts) ──────────────────────────────
+
+_SEEN_FILE = config.CONFIG_DIR / "seen_notices"
+_SEV = {  # severity -> (marker, ansi); ansi only emitted on a TTY
+    "info":   ("·",  "\033[36m"),    # cyan
+    "action": ("!",  "\033[33m"),    # yellow
+    "urgent": ("!!", "\033[1;31m"),  # bold red
+}
+_RESET = "\033[0m"
+
+
+def _load_seen() -> set:
+    try:
+        return set(_SEEN_FILE.read_text().split())
+    except OSError:
+        return set()
+
+
+def _mark_seen(ids: list) -> None:
+    if not ids:
+        return
+    try:
+        config.CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        with open(_SEEN_FILE, "a") as f:
+            f.write("\n".join(ids) + "\n")
+    except OSError:
+        pass
+
+
+def show_notices() -> None:
+    """Print any unseen operator broadcasts to stderr, once each. Strictly
+    best-effort: only on an interactive TTY, never touches stdout, and swallows
+    every error so it can never break or slow a real command in a script."""
+    if not sys.stdout.isatty() or os.environ.get("OBSIDEO_NO_NOTICES"):
+        return
+    try:
+        req = urllib.request.Request(
+            f"{config.signup_url()}/v1/notices",
+            headers={"User-Agent": config.USER_AGENT},
+        )
+        with urllib.request.urlopen(req, timeout=4) as resp:
+            notices = json.loads(resp.read().decode()).get("notices", [])
+    except Exception:
+        return
+    if not notices:
+        return
+    seen = _load_seen()
+    shown = []
+    for n in notices:
+        nid = str(n.get("id"))
+        if nid in seen:
+            continue
+        marker, color = _SEV.get((n.get("severity") or "info").lower(), _SEV["info"])
+        print(f"{color}{marker} Obsideo:{_RESET} {n.get('body', '').strip()}", file=sys.stderr)
+        shown.append(nid)
+    _mark_seen(shown)
+
+
+# ── Operator tooling: broadcast a message to all users ────────────────────────
+
+def run_admin(argv: list) -> int:
+    """`obsideo admin broadcast [--severity info|action|urgent] [--ttl SECONDS] "message"`
+    Authors a notice all users will see in their CLI. Requires the coord admin
+    secret in OBSIDEO_ADMIN_SECRET (operator-only; never shipped or stored)."""
+    if not argv or argv[0] != "broadcast":
+        print('Usage: obsideo admin broadcast [--severity info|action|urgent] '
+              '[--ttl SECONDS] "message"', file=sys.stderr)
+        return 2
+    severity, ttl, words, rest = "info", None, [], argv[1:]
+    i = 0
+    while i < len(rest):
+        if rest[i] == "--severity" and i + 1 < len(rest):
+            severity, i = rest[i + 1], i + 2
+        elif rest[i] == "--ttl" and i + 1 < len(rest):
+            ttl, i = rest[i + 1], i + 2
+        else:
+            words.append(rest[i]); i += 1
+    body = " ".join(words).strip()
+    if not body:
+        print("A message body is required.", file=sys.stderr)
+        return 2
+    secret = os.environ.get("OBSIDEO_ADMIN_SECRET", "").strip()
+    if not secret:
+        print("Set OBSIDEO_ADMIN_SECRET (the coord admin secret) to broadcast.", file=sys.stderr)
+        return 2
+    payload = {"body": body, "severity": severity}
+    if ttl is not None:
+        try:
+            payload["ttl_seconds"] = int(ttl)
+        except ValueError:
+            print("--ttl must be an integer number of seconds.", file=sys.stderr)
+            return 2
+    req = urllib.request.Request(
+        f"{config.signup_url()}/internal/messages",
+        data=json.dumps(payload).encode(),
+        headers={"Content-Type": "application/json", "User-Agent": config.USER_AGENT,
+                 "X-Admin-Secret": secret},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            out = json.loads(resp.read().decode())
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode()[:200]
+        print(f"Broadcast failed: HTTP {e.code} {detail}", file=sys.stderr)
+        return 1
+    except urllib.error.URLError as e:
+        print(f"Broadcast failed: {e.reason}", file=sys.stderr)
+        return 1
+    print(f"Broadcast sent (id {out.get('id')}, severity {severity}).")
+    return 0
 
 
 def run_login(url: str | None = None) -> bool:
@@ -419,6 +533,13 @@ def main():
     if argv and argv[0] == "login":
         ok = run_login()
         sys.exit(0 if ok else 1)
+
+    # `obsideo admin ...` is operator tooling, not a shell command.
+    if argv and argv[0] == "admin":
+        sys.exit(run_admin(argv[1:]))
+
+    # Surface any pending operator broadcasts (no-op unless interactive).
+    show_notices()
 
     shell = ObsideoShell()
 
