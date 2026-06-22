@@ -25,6 +25,20 @@ DEFAULT_CONFIG = {
 _DEFAULT_ENDPOINT = "https://s3.obsideo.io"
 _DEFAULT_REGION = "us-east-1"
 
+# Sent on every request to the signup shim. A descriptive User-Agent avoids
+# Cloudflare's default-`Python-urllib` bot block (HTTP 403 / error 1010) that
+# fronts signup.obsideo.io; without it, `obsideo login` and usage lookups fail.
+try:
+    from importlib.metadata import version as _pkg_version, PackageNotFoundError
+    try:
+        _VERSION = _pkg_version("obsideo-cloud")
+    except PackageNotFoundError:
+        _VERSION = "0.2.0"
+except Exception:
+    _VERSION = "0.2.0"
+
+USER_AGENT = f"obsideo-cloud/{_VERSION}"
+
 
 def write_secret_file(path: Path, value: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)

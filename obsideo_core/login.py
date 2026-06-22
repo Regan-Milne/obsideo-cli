@@ -18,7 +18,10 @@ class LoginError(RuntimeError):
 def _post_json(url: str, payload: dict) -> dict:
     data = json.dumps(payload).encode()
     req = urllib.request.Request(
-        url, data=data, headers={"Content-Type": "application/json"}, method="POST"
+        url,
+        data=data,
+        headers={"Content-Type": "application/json", "User-Agent": config.USER_AGENT},
+        method="POST",
     )
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:

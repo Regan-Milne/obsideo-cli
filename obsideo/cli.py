@@ -399,7 +399,7 @@ def _fetch_usage() -> dict | None:
     try:
         req = urllib.request.Request(
             f"{config.signup_url()}/v1/account/usage",
-            headers={"Authorization": f"Bearer {token}"},
+            headers={"Authorization": f"Bearer {token}", "User-Agent": config.USER_AGENT},
         )
         with urllib.request.urlopen(req, timeout=15) as resp:
             return json.loads(resp.read().decode())
