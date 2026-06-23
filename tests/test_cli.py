@@ -246,3 +246,39 @@ def test_update_check_windows_prints_command_not_pip(monkeypatch, capsys):
     err = capsys.readouterr().err
     assert ran == []  # never attempts the locked self-replace
     assert "pip install -U --no-cache-dir obsideo-cli" in err
+
+
+# ── sync auto-setup + info commands (0.2.6) ───────────────────────────────────
+
+def test_ensure_sync_dir_creates(tmp_path, monkeypatch):
+    from obsideo import sync
+    target = tmp_path / "mysync"
+    monkeypatch.setattr(sync, "_sync_dir", lambda: target)
+    assert not target.exists()
+    sd = sync.ensure_sync_dir()
+    assert sd == target and target.is_dir()  # auto-created, no manual mkdir
+
+
+def test_push_empty_folder_is_friendly_noop(tmp_path, monkeypatch, capsys):
+    from obsideo import sync
+    monkeypatch.setattr(sync, "_sync_dir", lambda: tmp_path / "s")
+    n = sync.push(verbose=True)
+    assert n == 0
+    out = capsys.readouterr().out.lower()
+    assert "empty" in out and "sync push" in out  # guides instead of erroring
+
+
+def test_about_and_faq_print(capsys):
+    sh = cli.ObsideoShell()
+    sh.do_about("")
+    sh.do_faq("")
+    out = capsys.readouterr().out
+    assert "OBSIDEO DRIVE" in out and "FAQ" in out and "obsideo-sync" in out
+
+
+def test_messages_handles_unreachable(monkeypatch, capsys):
+    def boom(*a, **k):
+        raise OSError("network down")
+    monkeypatch.setattr(cli.urllib.request, "urlopen", boom)
+    cli.ObsideoShell().do_messages("")
+    assert "couldn't reach" in capsys.readouterr().out.lower()

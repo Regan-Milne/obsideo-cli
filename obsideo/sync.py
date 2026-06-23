@@ -18,18 +18,24 @@ def _sync_dir() -> Path:
     return Path(config.load_config().get("sync_dir", str(Path.home() / "obsideo-sync")))
 
 
+def ensure_sync_dir() -> Path:
+    """Return the sync folder, creating it if needed. Called on login and by every
+    sync command so a user never has to make the folder by hand — it just exists."""
+    sd = _sync_dir()
+    sd.mkdir(parents=True, exist_ok=True)
+    return sd
+
+
 def _remote_key(name: str) -> str:
     return f"{REMOTE_PREFIX}{name}"
 
 
 def sync_status() -> dict:
-    sync_dir = _sync_dir()
+    sync_dir = ensure_sync_dir()
     entries = manifest.get_all()
     status = {"to_push": [], "to_pull": [], "synced": []}
 
-    local_files = {}
-    if sync_dir.exists():
-        local_files = {f.name: f for f in sync_dir.iterdir() if f.is_file()}
+    local_files = {f.name: f for f in sync_dir.iterdir() if f.is_file()}
 
     for name, f in local_files.items():
         local_hash = manifest.file_sha256(f)
@@ -53,17 +59,19 @@ def sync_status() -> dict:
 
 
 def push(verbose: bool = True) -> int:
-    sync_dir = _sync_dir()
-    if not sync_dir.exists():
+    sync_dir = ensure_sync_dir()
+    files = [p for p in sync_dir.iterdir() if p.is_file()]
+    if not files:
         if verbose:
-            print(f"Sync folder does not exist: {sync_dir}")
+            print(f"  Your sync folder is empty:\n    {sync_dir}\n"
+                  f"  Drop files in there, then run `sync push` again.")
         return 0
 
     do_encrypt = config.load_config().get("encrypt", True)
     entries = manifest.get_all()
     pushed = 0
 
-    for f in (p for p in sync_dir.iterdir() if p.is_file()):
+    for f in files:
         local_hash = manifest.file_sha256(f)
         entry = entries.get(f.name)
         if entry and entry.get("local_hash") == local_hash:
@@ -87,8 +95,7 @@ def push(verbose: bool = True) -> int:
 
 
 def pull(verbose: bool = True) -> int:
-    sync_dir = _sync_dir()
-    sync_dir.mkdir(parents=True, exist_ok=True)
+    sync_dir = ensure_sync_dir()
 
     try:
         remote = storage.list_prefix(REMOTE_PREFIX)

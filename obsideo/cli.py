@@ -310,6 +310,13 @@ def run_login(url: str | None = None) -> bool:
         print("Note: storage activation is finishing rollout; if an upload fails, retry shortly.")
     print("Your files are encrypted with a local key. Back it up:")
     print(f"  {crypto.DATA_KEY_FILE}")
+    # Create the sync folder now so it's ready (never make the user mkdir it).
+    try:
+        from obsideo import sync as _sync
+        sd = _sync.ensure_sync_dir()
+        print(f"Your sync folder is ready (drop files here, then `sync push`):\n  {sd}")
+    except Exception:
+        pass
     print("Type 'obsideo' to open the shell, or 'obsideo put <file>' to store something.")
     return True
 
@@ -541,25 +548,103 @@ class ObsideoShell(cmd.Cmd):
 
     # ── account ───────────────────────────────────────────────────────────────
     def do_account(self, arg):
-        """Show your plan: storage used vs. your free quota."""
+        """Show your account: plan, storage used, and where your files/keys live."""
         if not self._require_login():
             return
-        usage = _fetch_usage()
+        from obsideo import sync as sync_mod
         print()
         print("  -- Obsideo account --------------------------")
         print("     Plan:  Free")
-        if usage:
-            used, quota = usage["used_bytes"], usage["quota_bytes"]
-            pct = usage.get("percent_used", (used / quota if quota else 0))
-            print(f"     Used:  {_human(used)} / {_human(quota)} ({pct*100:.1f}%)")
-            bar_len = 30
-            filled = int(bar_len * min(pct, 1.0))
-            print(f"     [{'#'*filled}{'-'*(bar_len-filled)}]")
-            if pct >= 0.8:
-                print("     You're near your limit - reply to any Obsideo email to upgrade.")
+        if not config.account_token():
+            # No shim token (e.g. creds set via env / pre-login account): we can't
+            # query usage. Don't claim the service is down — tell them how to link it.
+            print("     Usage: sign in with `obsideo login` to see usage details")
         else:
-            print("     (usage unavailable - is the account service reachable?)")
+            usage = _fetch_usage()
+            if usage:
+                used, quota = usage["used_bytes"], usage["quota_bytes"]
+                pct = usage.get("percent_used", (used / quota if quota else 0))
+                print(f"     Used:  {_human(used)} / {_human(quota)} ({pct*100:.1f}%)")
+                bar_len = 30
+                filled = int(bar_len * min(pct, 1.0))
+                print(f"     [{'#'*filled}{'-'*(bar_len-filled)}]")
+                if pct >= 0.8:
+                    print("     You're near your limit - reply to any Obsideo email to upgrade.")
+            else:
+                print("     Usage: couldn't reach the account service - try again shortly")
+        print(f"     Files: bucket '{storage.bucket()}'  ·  sync folder {sync_mod.ensure_sync_dir()}")
+        print(f"     Keys:  {config.CONFIG_DIR}  (back up data.key)")
         print("  ---------------------------------------------")
+        print()
+
+    # ── about / faq / messages ────────────────────────────────────────────────
+    def do_about(self, arg):
+        """What Obsideo is."""
+        print("""
+  OBSIDEO DRIVE - encrypted storage we can't read.
+
+  Your files are encrypted on your device (AES-256-GCM) before they ever leave
+  it, then stored across three independent providers (RF=3). Obsideo's servers
+  only ever see ciphertext - never your filenames, never your data.
+
+  - Free: 3 GB, no card, no expiry.
+  - Your keys live only on your machine (~/.obsideo). Back up data.key - lose it
+    and the data is unrecoverable by design. That's the point: not even we can read it.
+  - Install / update:  pip install -U obsideo-cli      More:  https://obsideo.io
+""")
+
+    def do_faq(self, arg):
+        """Frequently asked questions."""
+        print("""
+  -- Obsideo FAQ --
+
+  Q: Can Obsideo read my files?
+  A: No. They're encrypted on your device before upload; we only store ciphertext.
+
+  Q: What's free?
+  A: 3 GB, no credit card, no expiry.
+
+  Q: What if I lose my key?
+  A: Your key is ~/.obsideo/data.key - back it up. Without it the data can't be
+     decrypted by anyone, including us.
+
+  Q: Two folders - what's the difference?
+  A: ~/.obsideo  = your keys + settings (don't touch).
+     ~/obsideo-sync = your SYNC folder - files you put here sync with `sync push`.
+
+  Q: What does `sync` do?
+  A: Mirrors your sync folder to/from the cloud. `sync push` uploads new/changed
+     files, `sync pull` downloads, `sync status` shows what's pending. It's manual
+     (you run it) and covers files in the top of the folder.
+
+  Q: How do I change settings (sync folder, encryption)?
+  A: `config` shows them; `config set sync_dir <path>` / `config set encrypt_names false`.
+
+  Q: More space?
+  A: Reply to any Obsideo email to upgrade. (A referral program is coming.)
+
+  Q: Updating?
+  A: pip install -U obsideo-cli  - the CLI also nudges you when an update is out.
+""")
+
+    def do_messages(self, arg):
+        """Messages from the Obsideo team."""
+        try:
+            req = urllib.request.Request(
+                f"{config.signup_url()}/v1/notices",
+                headers={"User-Agent": config.USER_AGENT},
+            )
+            with urllib.request.urlopen(req, timeout=10, context=config.ssl_context()) as resp:
+                notices = json.loads(resp.read().decode()).get("notices", [])
+        except Exception:
+            print("\n  Couldn't reach the message service - try again shortly.\n")
+            return
+        if not notices:
+            print("\n  No messages from the Obsideo team right now.\n")
+            return
+        print("\n  -- Messages from the Obsideo team --")
+        for n in notices:
+            print(f"   - {n.get('body', '').strip()}")
         print()
 
     # ── sync ──────────────────────────────────────────────────────────────────
