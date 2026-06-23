@@ -227,4 +227,4 @@ def test_update_check_runs_pip_on_yes(monkeypatch, capsys):
     with pytest.raises(SystemExit) as e:
         cli.check_for_update()
     assert e.value.code == 0
-    assert calls and calls[0][1:] == ["-m", "pip", "install", "-U", "obsideo-cli"]
+    assert calls and calls[0][1:] == ["-m", "pip", "install", "-U", "--no-cache-dir", "obsideo-cli"]

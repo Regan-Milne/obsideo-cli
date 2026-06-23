@@ -178,7 +178,7 @@ def _latest_pypi_version() -> str | None:
             f"https://pypi.org/pypi/{config.PACKAGE}/json",
             headers={"User-Agent": config.USER_AGENT},
         )
-        with urllib.request.urlopen(req, timeout=5, context=config.ssl_context()) as resp:
+        with urllib.request.urlopen(req, timeout=15, context=config.ssl_context()) as resp:
             return json.loads(resp.read().decode())["info"]["version"]
     except Exception:
         return None
@@ -206,7 +206,7 @@ def check_for_update() -> None:
     print(f"Updating to {latest}...", file=sys.stderr)
     try:
         rc = subprocess.run(
-            [sys.executable, "-m", "pip", "install", "-U", config.PACKAGE]
+            [sys.executable, "-m", "pip", "install", "-U", "--no-cache-dir", config.PACKAGE]
         ).returncode
     except Exception as e:
         print(f"Update failed: {e}\nTry manually:  pip install -U {config.PACKAGE}", file=sys.stderr)
@@ -604,7 +604,7 @@ class ObsideoShell(cmd.Cmd):
     # ── exit ──────────────────────────────────────────────────────────────────
     def do_exit(self, arg):
         """Exit."""
-        print("Bye.")
+        print("adios amigo")
         return True
 
     do_quit = do_exit
@@ -684,7 +684,7 @@ def main():
     try:
         shell.cmdloop()
     except KeyboardInterrupt:
-        print("\nBye.")
+        print("\nadios amigo")
 
 
 if __name__ == "__main__":
