@@ -13,16 +13,41 @@ from obsideo import manifest
 
 REMOTE_PREFIX = "sync/"
 
+# A local guide dropped in the sync folder so a user who opens it knows what it is
+# and how to use it. It is NEVER uploaded (push/status skip it).
+README_NAME = "READ ME - Obsideo sync.txt"
+_README_TEXT = """This is your Obsideo sync folder.
+
+Put files here, then back them up to your encrypted Obsideo storage from the CLI:
+
+    obsideo            open the app
+    sync push          upload new / changed files (encrypted on your device)
+    sync pull          download your files into this folder
+    sync status        see what's pending
+
+Everything is encrypted on your device before it leaves, so Obsideo cannot read
+it. In the CLI, type 'about' or 'faq' to learn more.
+
+(This file stays on your computer - it is not uploaded.)
+"""
+
 
 def _sync_dir() -> Path:
     return Path(config.load_config().get("sync_dir", str(Path.home() / "obsideo-sync")))
 
 
 def ensure_sync_dir() -> Path:
-    """Return the sync folder, creating it if needed. Called on login and by every
-    sync command so a user never has to make the folder by hand — it just exists."""
+    """Return the sync folder, creating it if needed (and dropping a short READ ME
+    the first time). Called on login and by every sync command so a user never has
+    to make the folder by hand — it just exists, with instructions inside."""
     sd = _sync_dir()
+    created = not sd.exists()
     sd.mkdir(parents=True, exist_ok=True)
+    if created:
+        try:
+            (sd / README_NAME).write_text(_README_TEXT)
+        except OSError:
+            pass
     return sd
 
 
@@ -35,7 +60,7 @@ def sync_status() -> dict:
     entries = manifest.get_all()
     status = {"to_push": [], "to_pull": [], "synced": []}
 
-    local_files = {f.name: f for f in sync_dir.iterdir() if f.is_file()}
+    local_files = {f.name: f for f in sync_dir.iterdir() if f.is_file() and f.name != README_NAME}
 
     for name, f in local_files.items():
         local_hash = manifest.file_sha256(f)
@@ -60,7 +85,7 @@ def sync_status() -> dict:
 
 def push(verbose: bool = True) -> int:
     sync_dir = ensure_sync_dir()
-    files = [p for p in sync_dir.iterdir() if p.is_file()]
+    files = [p for p in sync_dir.iterdir() if p.is_file() and p.name != README_NAME]
     if not files:
         if verbose:
             print(f"  Your sync folder is empty:\n    {sync_dir}\n"

@@ -282,3 +282,16 @@ def test_messages_handles_unreachable(monkeypatch, capsys):
     monkeypatch.setattr(cli.urllib.request, "urlopen", boom)
     cli.ObsideoShell().do_messages("")
     assert "couldn't reach" in capsys.readouterr().out.lower()
+
+
+def test_sync_readme_created_and_not_pushed(tmp_path, monkeypatch, capsys):
+    from obsideo import sync
+    sd = tmp_path / "obsideo-sync"
+    monkeypatch.setattr(sync, "_sync_dir", lambda: sd)
+    sync.ensure_sync_dir()
+    readme = sd / sync.README_NAME
+    assert readme.exists() and "sync push" in readme.read_text()  # guide dropped in
+    # A folder containing ONLY the README is treated as empty (README never uploads).
+    n = sync.push(verbose=True)
+    assert n == 0
+    assert "empty" in capsys.readouterr().out.lower()

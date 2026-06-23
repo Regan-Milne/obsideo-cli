@@ -322,8 +322,16 @@ def run_login(url: str | None = None) -> bool:
 
 
 class ObsideoShell(cmd.Cmd):
-    intro = ("\n  Obsideo - encrypted storage we can't read.\n"
-             "  Type 'help' for commands, 'exit' to quit.\n")
+    intro = (
+        "\n  Obsideo - encrypted storage we can't read.\n\n"
+        "  Common commands:\n"
+        "    put <file> / get <name>     upload / download\n"
+        "    ls / cd / mkdir             browse your files\n"
+        "    sync push / pull / status   mirror your sync folder\n"
+        "    account                     your plan and usage\n"
+        "    about / faq / messages      learn more / team news\n\n"
+        "  Type 'help <command>' for details (e.g. 'help sync'), or 'exit' to quit.\n"
+    )
     prompt = "obsideo:/ "
 
     def __init__(self):
