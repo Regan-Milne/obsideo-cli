@@ -298,8 +298,9 @@ def test_sync_readme_created_and_not_pushed(tmp_path, monkeypatch, capsys):
 
 
 def test_account_computes_usage_without_token(monkeypatch, tmp_path, capsys):
-    # No signup token -> account must compute usage from storage, NOT nag to log in.
+    # No gateway info + no signup token -> compute from storage, NOT nag to log in.
     from obsideo import sync
+    monkeypatch.setattr(cli, "_fetch_account_info", lambda: None)  # don't hit network
     monkeypatch.setattr(cli.config, "account_token", lambda: None)
     monkeypatch.setattr(cli.storage, "total_usage", lambda: (1_500_000, 7))
     monkeypatch.setattr(cli.storage, "bucket", lambda: "tb")
@@ -308,6 +309,20 @@ def test_account_computes_usage_without_token(monkeypatch, tmp_path, capsys):
     out = capsys.readouterr().out
     assert "across 7 file" in out
     assert "obsideo login" not in out and "sign in" not in out.lower()
+
+
+def test_account_shows_percentage_from_gateway(monkeypatch, tmp_path, capsys):
+    # When the gateway returns quota, account shows used / quota / % + a bar.
+    from obsideo import sync
+    monkeypatch.setattr(cli, "_fetch_account_info",
+                        lambda: {"tier": "testdrive", "used_bytes": 500_000_000,
+                                 "quota_bytes": 5_368_709_120, "object_count": 314})
+    monkeypatch.setattr(cli.storage, "bucket", lambda: "obsideo")
+    monkeypatch.setattr(sync, "_sync_dir", lambda: tmp_path / "s")
+    cli.ObsideoShell().do_account("")
+    out = capsys.readouterr().out
+    assert "/" in out and "%" in out and "[" in out  # used / quota (pct) + bar
+    assert "314 object" in out and "Free" in out  # testdrive shown as Free
 
 
 def test_precmd_strips_obsideo_prefix():

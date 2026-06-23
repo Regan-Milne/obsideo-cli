@@ -146,10 +146,12 @@ def show_status() -> None:
     Makes a network call, so it's shown at session start / post-login only."""
     if not _chrome_enabled() or not config.is_logged_in():
         return
-    usage = _fetch_usage()
+    usage = _fetch_account_info() or _fetch_usage()
     if not usage:
         return
     used, quota = usage.get("used_bytes", 0), usage.get("quota_bytes", 0)
+    if not quota:
+        return  # no quota to show a bar against; account command shows raw usage
     pct = usage.get("percent_used")
     if pct is None:
         pct = (used / quota) if quota else 0.0
@@ -568,22 +570,33 @@ class ObsideoShell(cmd.Cmd):
         if not self._require_login():
             return
         from obsideo import sync as sync_mod
+        # Usage + quota for any account via the gateway (works with just the S3
+        # creds); fall back to the signup-service token, then to a storage-only
+        # count - so this always shows something useful and never nags to log in.
+        info = _fetch_account_info() or (_fetch_usage() if config.account_token() else None)
         print()
         print("  -- Obsideo account --------------------------")
-        print("     Plan:  Free")
-        # Prefer the signup service (it knows your quota); otherwise compute usage
-        # straight from your storage so this always works - never nag to "log in".
-        usage = _fetch_usage() if config.account_token() else None
-        if usage:
-            used, quota = usage["used_bytes"], usage["quota_bytes"]
-            pct = usage.get("percent_used", (used / quota if quota else 0))
-            print(f"     Used:  {_human(used)} / {_human(quota)} ({pct*100:.1f}%)")
-            bar_len = 30
-            filled = int(bar_len * min(pct, 1.0))
-            print(f"     [{'#'*filled}{'-'*(bar_len-filled)}]")
-            if pct >= 0.8:
-                print("     You're near your limit - reply to any Obsideo email to upgrade.")
+        if info:
+            tier = (info.get("tier") or "free").replace("testdrive", "Free").title()
+            print(f"     Plan:  {tier}")
+            used = info.get("used_bytes", 0)
+            quota = info.get("quota_bytes", 0)
+            if quota:
+                pct = used / quota
+                bar_len = 30
+                filled = int(bar_len * min(pct, 1.0))
+                print(f"     Used:  {_human(used)} / {_human(quota)} ({pct*100:.1f}%)")
+                print(f"            [{'#'*filled}{'-'*(bar_len-filled)}]")
+                if pct >= 0.8:
+                    print("     Near your limit - reply to any Obsideo email to upgrade.")
+            else:
+                print(f"     Used:  {_human(used)}")
+            if info.get("object_count"):
+                print(f"     Files: {info['object_count']} object(s)")
+            if info.get("days_remaining"):
+                print(f"     Renews/expires in {info['days_remaining']} day(s)")
         else:
+            print("     Plan:  Free")
             try:
                 used, n = storage.total_usage()
                 print(f"     Used:  {_human(used)} across {n} file(s)")
@@ -736,6 +749,32 @@ def _fetch_usage() -> dict | None:
             f"{config.signup_url()}/v1/account/usage",
             headers={"Authorization": f"Bearer {token}", "User-Agent": config.USER_AGENT},
         )
+        with urllib.request.urlopen(req, timeout=15, context=config.ssl_context()) as resp:
+            return json.loads(resp.read().decode())
+    except Exception:
+        return None
+
+
+def _fetch_account_info() -> dict | None:
+    """Usage + quota for the calling account via the gateway's SigV4-authed
+    /v1/account. Works for ANY account using only the S3 creds we already have
+    (no signup-service token needed). Returns {used_bytes, quota_bytes, tier,
+    object_count, days_remaining, ...} or None if unavailable (e.g. the gateway
+    endpoint isn't deployed yet, or no creds) — callers fall back gracefully."""
+    ak = os.environ.get("OBSIDEO_S3_ACCESS_KEY")
+    sk = os.environ.get("OBSIDEO_S3_SECRET_KEY")
+    if not (ak and sk):
+        return None
+    try:
+        from botocore.auth import SigV4Auth
+        from botocore.awsrequest import AWSRequest
+        from botocore.credentials import Credentials
+        endpoint = os.environ.get("OBSIDEO_S3_ENDPOINT", "https://s3.obsideo.io").rstrip("/")
+        region = os.environ.get("OBSIDEO_S3_REGION", "us-east-1")
+        url = f"{endpoint}/v1/account"
+        signed = AWSRequest(method="GET", url=url)
+        SigV4Auth(Credentials(ak, sk), "s3", region).add_auth(signed)
+        req = urllib.request.Request(url, headers=dict(signed.headers), method="GET")
         with urllib.request.urlopen(req, timeout=15, context=config.ssl_context()) as resp:
             return json.loads(resp.read().decode())
     except Exception:
