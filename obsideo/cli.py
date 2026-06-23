@@ -200,8 +200,15 @@ def check_for_update() -> None:
     except (EOFError, KeyboardInterrupt):
         print(file=sys.stderr)
         return
+    manual = f"pip install -U --no-cache-dir {config.PACKAGE}"
     if ans not in ("", "y", "yes"):
-        print(f"Skipped. Update later with:  pip install -U {config.PACKAGE}", file=sys.stderr)
+        print(f"Skipped. Update later with:  {manual}", file=sys.stderr)
+        return
+    if sys.platform == "win32":
+        # Windows file-locks the running obsideo.exe, so pip can't replace it from
+        # inside a live session (WinError 32). Hand over the one command to run.
+        print(f"\nWindows can't replace the CLI while it's running. To finish, close\n"
+              f"obsideo and run:\n    {manual}", file=sys.stderr)
         return
     print(f"Updating to {latest}...", file=sys.stderr)
     try:
@@ -209,7 +216,7 @@ def check_for_update() -> None:
             [sys.executable, "-m", "pip", "install", "-U", "--no-cache-dir", config.PACKAGE]
         ).returncode
     except Exception as e:
-        print(f"Update failed: {e}\nTry manually:  pip install -U {config.PACKAGE}", file=sys.stderr)
+        print(f"Update failed: {e}\nTry manually:  {manual}", file=sys.stderr)
         return
     if rc == 0:
         print(f"\nUpdated to {latest}. Restart `obsideo` to use the new version.", file=sys.stderr)

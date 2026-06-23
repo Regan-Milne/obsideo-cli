@@ -213,8 +213,9 @@ def test_update_check_prompts_and_respects_no(monkeypatch, capsys):
     assert ran == []  # declined -> no pip invocation
 
 
-def test_update_check_runs_pip_on_yes(monkeypatch, capsys):
+def test_update_check_runs_pip_on_yes_posix(monkeypatch, capsys):
     monkeypatch.setattr(cli.sys.stdout, "isatty", lambda: True, raising=False)
+    monkeypatch.setattr(cli.sys, "platform", "linux")  # in-process upgrade path
     monkeypatch.delenv("OBSIDEO_NO_UPDATE_CHECK", raising=False)
     monkeypatch.setattr(cli.config, "VERSION", "0.2.1")
     monkeypatch.setattr(cli, "_latest_pypi_version", lambda: "0.2.2")
@@ -228,3 +229,20 @@ def test_update_check_runs_pip_on_yes(monkeypatch, capsys):
         cli.check_for_update()
     assert e.value.code == 0
     assert calls and calls[0][1:] == ["-m", "pip", "install", "-U", "--no-cache-dir", "obsideo-cli"]
+
+
+def test_update_check_windows_prints_command_not_pip(monkeypatch, capsys):
+    # On Windows the running .exe is locked; "yes" must NOT run pip in-process,
+    # it prints the command instead (no WinError 32, no doomed self-replace).
+    monkeypatch.setattr(cli.sys.stdout, "isatty", lambda: True, raising=False)
+    monkeypatch.setattr(cli.sys, "platform", "win32")
+    monkeypatch.delenv("OBSIDEO_NO_UPDATE_CHECK", raising=False)
+    monkeypatch.setattr(cli.config, "VERSION", "0.2.1")
+    monkeypatch.setattr(cli, "_latest_pypi_version", lambda: "0.2.2")
+    monkeypatch.setattr("builtins.input", lambda *a: "y")
+    ran = []
+    monkeypatch.setattr(cli.subprocess, "run", lambda *a, **k: ran.append(a))
+    cli.check_for_update()  # returns, does not SystemExit
+    err = capsys.readouterr().err
+    assert ran == []  # never attempts the locked self-replace
+    assert "pip install -U --no-cache-dir obsideo-cli" in err
