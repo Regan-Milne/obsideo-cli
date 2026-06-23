@@ -295,3 +295,23 @@ def test_sync_readme_created_and_not_pushed(tmp_path, monkeypatch, capsys):
     n = sync.push(verbose=True)
     assert n == 0
     assert "empty" in capsys.readouterr().out.lower()
+
+
+def test_account_computes_usage_without_token(monkeypatch, tmp_path, capsys):
+    # No signup token -> account must compute usage from storage, NOT nag to log in.
+    from obsideo import sync
+    monkeypatch.setattr(cli.config, "account_token", lambda: None)
+    monkeypatch.setattr(cli.storage, "total_usage", lambda: (1_500_000, 7))
+    monkeypatch.setattr(cli.storage, "bucket", lambda: "tb")
+    monkeypatch.setattr(sync, "_sync_dir", lambda: tmp_path / "s")
+    cli.ObsideoShell().do_account("")
+    out = capsys.readouterr().out
+    assert "across 7 file" in out
+    assert "obsideo login" not in out and "sign in" not in out.lower()
+
+
+def test_precmd_strips_obsideo_prefix():
+    sh = cli.ObsideoShell()
+    assert sh.precmd("obsideo ls") == "ls"
+    assert sh.precmd("obsideo login") == "login"
+    assert sh.precmd("ls") == "ls"  # unchanged when no prefix

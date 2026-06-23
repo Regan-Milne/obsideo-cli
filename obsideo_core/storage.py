@@ -189,6 +189,31 @@ def exists(key: str) -> bool:
     return head(key) is not None
 
 
+def total_usage() -> tuple[int, int]:
+    """Total stored bytes + object count across the account's bucket (flat list).
+    Lets `account` show real usage without the signup-service token — it just reads
+    the storage the account can already see. Names stay opaque; only sizes summed."""
+    s3 = _s3()
+    total = 0
+    count = 0
+    token = None
+    while True:
+        kwargs = dict(Bucket=bucket())
+        if token:
+            kwargs["ContinuationToken"] = token
+        resp = s3.list_objects_v2(**kwargs)
+        for obj in resp.get("Contents", []):
+            if obj["Key"].endswith("/"):
+                continue  # folder marker, not a real object
+            total += obj.get("Size", 0)
+            count += 1
+        if resp.get("IsTruncated"):
+            token = resp.get("NextContinuationToken")
+        else:
+            break
+    return total, count
+
+
 def list_prefix(prefix: str = "", delimiter: str = "/") -> dict:
     """List one VFS level. Returns {'folders': [name...], 'files': [{name,key,size}]}.
 

@@ -339,6 +339,14 @@ class ObsideoShell(cmd.Cmd):
         self._cwd = ""  # S3 key prefix; "" = root
         self._refresh_prompt()
 
+    def precmd(self, line: str) -> str:
+        # Tolerate a leading "obsideo " typed out of habit inside the shell
+        # (e.g. "obsideo ls" -> "ls"), so it doesn't error with Unknown syntax.
+        stripped = line.lstrip()
+        if stripped.lower().startswith("obsideo "):
+            return stripped[len("obsideo "):]
+        return line
+
     # ── path helpers ────────────────────────────────────────────────────────
     def _refresh_prompt(self):
         self.prompt = f"obsideo:/{self._cwd} "
@@ -563,25 +571,27 @@ class ObsideoShell(cmd.Cmd):
         print()
         print("  -- Obsideo account --------------------------")
         print("     Plan:  Free")
-        if not config.account_token():
-            # No shim token (e.g. creds set via env / pre-login account): we can't
-            # query usage. Don't claim the service is down — tell them how to link it.
-            print("     Usage: sign in with `obsideo login` to see usage details")
+        # Prefer the signup service (it knows your quota); otherwise compute usage
+        # straight from your storage so this always works - never nag to "log in".
+        usage = _fetch_usage() if config.account_token() else None
+        if usage:
+            used, quota = usage["used_bytes"], usage["quota_bytes"]
+            pct = usage.get("percent_used", (used / quota if quota else 0))
+            print(f"     Used:  {_human(used)} / {_human(quota)} ({pct*100:.1f}%)")
+            bar_len = 30
+            filled = int(bar_len * min(pct, 1.0))
+            print(f"     [{'#'*filled}{'-'*(bar_len-filled)}]")
+            if pct >= 0.8:
+                print("     You're near your limit - reply to any Obsideo email to upgrade.")
         else:
-            usage = _fetch_usage()
-            if usage:
-                used, quota = usage["used_bytes"], usage["quota_bytes"]
-                pct = usage.get("percent_used", (used / quota if quota else 0))
-                print(f"     Used:  {_human(used)} / {_human(quota)} ({pct*100:.1f}%)")
-                bar_len = 30
-                filled = int(bar_len * min(pct, 1.0))
-                print(f"     [{'#'*filled}{'-'*(bar_len-filled)}]")
-                if pct >= 0.8:
-                    print("     You're near your limit - reply to any Obsideo email to upgrade.")
-            else:
-                print("     Usage: couldn't reach the account service - try again shortly")
-        print(f"     Files: bucket '{storage.bucket()}'  ·  sync folder {sync_mod.ensure_sync_dir()}")
-        print(f"     Keys:  {config.CONFIG_DIR}  (back up data.key)")
+            try:
+                used, n = storage.total_usage()
+                print(f"     Used:  {_human(used)} across {n} file(s)")
+            except Exception:
+                print("     Used:  (couldn't read storage just now)")
+        print(f"     Bucket: {storage.bucket()}")
+        print(f"     Sync folder: {sync_mod.ensure_sync_dir()}")
+        print(f"     Keys: {config.CONFIG_DIR}  (back up data.key)")
         print("  ---------------------------------------------")
         print()
 
