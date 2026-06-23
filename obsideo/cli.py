@@ -635,6 +635,11 @@ def _fetch_usage() -> dict | None:
 def main():
     argv = sys.argv[1:]
 
+    # Version (stdout, clean + parseable — handled before any chrome).
+    if argv and argv[0] in ("--version", "-V", "version"):
+        print(f"obsideo-cli {config.VERSION}")
+        return
+
     # Branded banner on every init (stderr, TTY-gated). Skip for `admin` so
     # operator tooling output stays clean.
     if not (argv and argv[0] == "admin"):

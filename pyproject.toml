@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "obsideo-cli"
-version = "0.2.3"
+version = "0.2.4"
 description = "Obsideo Cloud - encrypted storage we can't read. Save, browse, and sync whatever you want, from your terminal."
 readme = "README.md"
 requires-python = ">=3.10"
