@@ -284,6 +284,45 @@ def test_messages_handles_unreachable(monkeypatch, capsys):
     assert "couldn't reach" in capsys.readouterr().out.lower()
 
 
+def test_sync_push_reuploads_when_remote_missing(tmp_path, monkeypatch, capsys):
+    # Stale manifest (e.g. after an account switch) says a file is synced, but the
+    # remote is actually empty -> push must RE-UPLOAD, not skip. Regression for the
+    # "unchanged, skipping" + empty-remote bug after re-login to a new account.
+    from obsideo import sync, manifest
+    sd = tmp_path / "obsideo-sync"
+    monkeypatch.setattr(sync, "_sync_dir", lambda: sd)
+    sync.ensure_sync_dir()
+    f = sd / "a.txt"; f.write_bytes(b"hello")
+    h = manifest.file_sha256(f)
+    monkeypatch.setattr(manifest, "get_all", lambda: {"a.txt": {"local_hash": h}})
+    monkeypatch.setattr(manifest, "upsert", lambda *a, **k: None)
+    monkeypatch.setattr(cli.storage, "list_prefix", lambda prefix: {"folders": [], "files": []})
+    put = []
+    monkeypatch.setattr(cli.storage, "put", lambda key, body: put.append(key) or key)
+    n = sync.push(verbose=True)
+    assert n == 1 and put and "a.txt" in put[0]
+    assert "uploaded" in capsys.readouterr().out
+
+
+def test_sync_push_skips_when_present_and_unchanged(tmp_path, monkeypatch, capsys):
+    # The optimization still holds: a file that's genuinely unchanged AND present
+    # on the remote is skipped (no needless re-upload).
+    from obsideo import sync, manifest
+    sd = tmp_path / "obsideo-sync"
+    monkeypatch.setattr(sync, "_sync_dir", lambda: sd)
+    sync.ensure_sync_dir()
+    f = sd / "a.txt"; f.write_bytes(b"hello")
+    h = manifest.file_sha256(f)
+    monkeypatch.setattr(manifest, "get_all", lambda: {"a.txt": {"local_hash": h}})
+    monkeypatch.setattr(cli.storage, "list_prefix",
+                        lambda prefix: {"folders": [], "files": [{"name": "a.txt", "key": "sync/a.txt", "size": 5}]})
+    put = []
+    monkeypatch.setattr(cli.storage, "put", lambda key, body: put.append(key) or key)
+    n = sync.push(verbose=True)
+    assert n == 0 and put == []
+    assert "skipping" in capsys.readouterr().out
+
+
 def test_sync_readme_created_and_not_pushed(tmp_path, monkeypatch, capsys):
     from obsideo import sync
     sd = tmp_path / "obsideo-sync"

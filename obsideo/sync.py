@@ -55,28 +55,41 @@ def _remote_key(name: str) -> str:
     return f"{REMOTE_PREFIX}{name}"
 
 
+def _remote_names() -> tuple[set, bool]:
+    """Names actually present under the sync prefix on the remote, and whether we
+    could reach it. Used to reconcile against the local manifest — the manifest
+    alone can't be trusted (e.g. after switching accounts it still 'remembers'
+    files uploaded to the OLD account, which aren't on the new one)."""
+    try:
+        remote = storage.list_prefix(REMOTE_PREFIX)
+        return {f["name"] for f in remote["files"]}, True
+    except Exception:
+        return set(), False
+
+
 def sync_status() -> dict:
     sync_dir = ensure_sync_dir()
     entries = manifest.get_all()
     status = {"to_push": [], "to_pull": [], "synced": []}
 
     local_files = {f.name: f for f in sync_dir.iterdir() if f.is_file() and f.name != README_NAME}
+    remote_names, remote_known = _remote_names()
 
     for name, f in local_files.items():
         local_hash = manifest.file_sha256(f)
         entry = entries.get(name)
-        if entry is None or entry.get("local_hash") != local_hash:
+        # A file is only "synced" if the manifest matches AND it's really on the
+        # remote. If we couldn't reach the remote, fall back to the manifest so a
+        # transient outage doesn't flag everything as needing a re-push.
+        on_remote = (name in remote_names) if remote_known else True
+        if entry is None or entry.get("local_hash") != local_hash or not on_remote:
             status["to_push"].append(name)
         else:
             status["synced"].append(name)
 
     # Remote files we know about but don't have locally.
-    try:
-        remote = storage.list_prefix(REMOTE_PREFIX)
-        remote_names = {f["name"] for f in remote["files"]}
-    except Exception:
-        remote_names = set(entries.keys())
-    for name in remote_names:
+    pullable = remote_names if remote_known else set(entries.keys())
+    for name in pullable:
         if name not in local_files:
             status["to_pull"].append(name)
 
@@ -94,12 +107,18 @@ def push(verbose: bool = True) -> int:
 
     do_encrypt = config.load_config().get("encrypt", True)
     entries = manifest.get_all()
+    # Reconcile against the real remote: only skip a file if the manifest matches
+    # AND it's actually up there. This self-heals a stale manifest (e.g. after an
+    # account switch, where the manifest still lists files from the old account)
+    # without the user having to clear anything.
+    remote_names, remote_known = _remote_names()
     pushed = 0
 
     for f in files:
         local_hash = manifest.file_sha256(f)
         entry = entries.get(f.name)
-        if entry and entry.get("local_hash") == local_hash:
+        on_remote = (f.name in remote_names) if remote_known else True
+        if entry and entry.get("local_hash") == local_hash and on_remote:
             if verbose:
                 print(f"  {f.name} - unchanged, skipping")
             continue
