@@ -7,7 +7,7 @@ Your data lands on three independent providers (RF=3).
 
 ```
 pip install obsideo-cli
-obsideo login    # email -> 3 GB free
+obsideo login    # email -> 12 GB free
 obsideo          # open the shell
 ```
 
@@ -18,7 +18,7 @@ $ obsideo login
 Enter your email: you@example.com
 Check your email for a verification code.
 Enter verification code: 482913
-You're all set. 3 GB free.
+You're all set. 12 GB free.
 ```
 
 Login is handled by Obsideo's signup service at **`signup.obsideo.io`**: it emails
@@ -44,7 +44,7 @@ obsideo:/trip/ get cat.jpg ./downloaded.jpg
 
 | Command | Description |
 |---|---|
-| `obsideo login` | Sign up / log in with your email (3 GB free) |
+| `obsideo login` | Sign up / log in with your email (12 GB free) |
 | `ls [path]` | List files and folders |
 | `cd <path>` / `pwd` | Move around / show location |
 | `put <local> [name]` | Encrypt + upload a file, or a whole folder (recursive). `--no-encrypt` to store as-is |

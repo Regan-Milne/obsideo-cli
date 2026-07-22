@@ -36,10 +36,16 @@ def _post_json(url: str, payload: dict) -> dict:
         raise LoginError(f"could not reach {url}: {e.reason}")
 
 
-def start(email: str, url: str | None = None) -> None:
-    """Request a verification code be emailed to `email`."""
+def start(email: str, url: str | None = None, source: str | None = None) -> None:
+    """Request a verification code be emailed to `email`.
+
+    `source` is optional free-text attribution recorded on the account ("where
+    did this signup come from"). It never gates signup. Defaults to "cli" so
+    terminal signups stop being indistinguishable from raw API calls.
+    """
     url = url or config.signup_url()
-    _post_json(f"{url}/v1/auth/start", {"email": email})
+    payload = {"email": email, "source": source or "cli"}
+    _post_json(f"{url}/v1/auth/start", payload)
 
 
 def verify(email: str, code: str, url: str | None = None,

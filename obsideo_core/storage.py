@@ -63,7 +63,7 @@ def _require_credentials() -> tuple[str, str]:
     if not ak or not sk:
         raise StorageConfigError(
             "You're not logged in. Run `obsideo login` to get started (5 GB... "
-            "actually 3 GB free), or set OBSIDEO_S3_ACCESS_KEY / OBSIDEO_S3_SECRET_KEY."
+            "actually 12 GB free), or set OBSIDEO_S3_ACCESS_KEY / OBSIDEO_S3_SECRET_KEY."
         )
     return ak, sk
 
