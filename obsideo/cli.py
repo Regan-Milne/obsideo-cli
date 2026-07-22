@@ -769,7 +769,7 @@ class ObsideoShell(cmd.Cmd):
   OBSIDEO DRIVE - encrypted storage we can't read.
 
   Your files are encrypted on your device (AES-256-GCM) before they ever leave
-  it, then stored across three independent providers (RF=3). Obsideo's servers
+  it, then stored across three providers (RF=3). Obsideo's servers
   only ever see ciphertext - never your filenames, never your data.
 
   - Free: 12 GB, no card, no expiry.

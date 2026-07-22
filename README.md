@@ -3,7 +3,7 @@
 **Encrypted storage we can't read.** Save, browse, and sync whatever you want
 from your terminal. Files are encrypted on your machine before they leave, so
 Obsideo's gateway, coordinator, and storage providers only ever see ciphertext.
-Your data lands on three independent providers (RF=3).
+Your data lands on three providers (RF=3).
 
 ```
 pip install obsideo-cli

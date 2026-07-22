@@ -2,7 +2,7 @@
 
 The gateway stores bytes verbatim and holds no keys; the client encrypts before
 calling here (see crypto.py), so the gateway/coord/providers see ciphertext only
-(Principle 1). Objects land on three independent providers (RF=3) via the coord.
+(Principle 1). Objects land on three providers (RF=3) via the coord.
 
 This is the shared core both the general `obsideo` CLI and the `mlvault` extension
 build on. It generalizes the original mlvault seam with the browse operations a
