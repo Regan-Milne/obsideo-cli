@@ -11,7 +11,11 @@ import json
 import os
 from pathlib import Path
 
-CONFIG_DIR = Path.home() / ".obsideo"
+# OBSIDEO_CONFIG_DIR relocates the whole config directory. Without it there is
+# no way to exercise the login path without overwriting the real user's
+# credentials, which is exactly how a stubbed test clobbered a live account
+# once. Also lets a user keep a second account or a sandbox side by side.
+CONFIG_DIR = Path(os.environ.get("OBSIDEO_CONFIG_DIR") or (Path.home() / ".obsideo"))
 CREDENTIALS_FILE = CONFIG_DIR / "credentials"
 CONFIG_FILE = CONFIG_DIR / "config.json"
 

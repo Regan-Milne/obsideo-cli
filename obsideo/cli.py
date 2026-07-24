@@ -3,7 +3,7 @@
 Save, browse, and sync whatever you want - encrypted on your machine before it
 leaves, so Obsideo can't read it. An interactive shell plus one-shot commands.
 
-    obsideo login                 sign up / log in (email -> 3 GB free)
+    obsideo login                 sign up / log in (email -> 12 GB free)
     obsideo                       start the interactive shell
     obsideo ls / put / get ...    run a single command
 """
@@ -290,35 +290,163 @@ def run_admin(argv: list) -> int:
     return 0
 
 
-def run_login(url: str | None = None) -> bool:
-    """Interactive email-OTP login. Returns True on success."""
+LOGIN_USAGE = """\
+Usage: obsideo login [options]
+
+  With no options, prompts for everything (the human path).
+
+Options:
+  --email <address>   account email; skips the email prompt
+  --code <123456>     the 6-digit code from that inbox; skips the code prompt
+  --source <label>    attribution recorded on the account (e.g. your tool name)
+  --referral <code>   a friend's referral code, +1 GB
+  --json              print a machine-readable receipt instead of prose
+  -h, --help          show this
+
+Driving it without a terminal (two calls, because the code arrives by email):
+  obsideo login --email you@example.com --source my-agent --json
+  obsideo login --email you@example.com --code 123456 --json
+
+With no terminal and a missing required value, this exits with an error naming
+the flag rather than blocking on a prompt nobody can answer."""
+
+_LOGIN_FLAGS = {"--email": "email", "--code": "code", "--source": "source",
+                "--referral": "referral"}
+
+
+def _parse_login_args(args: list[str]) -> tuple[dict, str | None]:
+    """Tiny hand-rolled parser. Returns (kwargs, error)."""
+    opts: dict = {}
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a in ("-h", "--help"):
+            opts["help"] = True
+            i += 1
+        elif a == "--json":
+            opts["json_out"] = True
+            i += 1
+        elif a in _LOGIN_FLAGS:
+            if i + 1 >= len(args) or args[i + 1].startswith("--"):
+                return {}, f"{a} needs a value."
+            opts[_LOGIN_FLAGS[a]] = args[i + 1]
+            i += 2
+        else:
+            return {}, f"Unknown option for login: {a}"
+    return opts, None
+
+
+class NonInteractive(Exception):
+    """A required value was missing and there is no terminal to ask on."""
+
+
+def _ask(prompt: str, provided: str | None, flag: str, *, required: bool = True) -> str:
+    """Return a supplied value, else prompt for it, else fail loudly.
+
+    An agent or CI job running `obsideo login` used to hit a bare input() and
+    either hang or die with a raw EOFError traceback. Failing with a message
+    naming the flag is always better than either.
+
+    isatty() is checked first as a fast path but is NOT trusted on its own:
+    on Windows shells it can report a terminal when stdin is redirected. The
+    EOFError catch is what actually makes this reliable everywhere.
+    """
+    if provided is not None:
+        return provided.strip()
+    if sys.stdin.isatty():
+        try:
+            # Prompt on stderr, not via input()'s own argument, which writes to
+            # stdout. Keeps stdout parseable for --json callers.
+            print(prompt, end="", flush=True, file=sys.stderr)
+            return input().strip()
+        except (EOFError, KeyboardInterrupt):
+            pass
+    elif required:
+        raise NonInteractive(f"{flag} is required when there is no terminal to prompt on")
+    else:
+        return ""
+    if required:
+        raise NonInteractive(f"{flag} is required when there is no terminal to prompt on")
+    return ""
+
+
+def run_login(url: str | None = None, *, email: str | None = None,
+              code: str | None = None, source: str | None = None,
+              referral: str | None = None, json_out: bool = False) -> bool:
+    """Email-OTP login. Interactive when run by a human, flag-driven for agents.
+
+    Fully interactive (no flags) behaves exactly as it always has. Supplying
+    --email alone performs step one only (send the code) and returns, because
+    the code arrives out of band; supplying --email and --code performs the
+    verification. That two-call shape is what lets a caller with no terminal
+    drive the whole flow.
+    """
     url = url or config.signup_url()
-    email = input("Enter your email: ").strip()
-    if not email:
-        print("Email is required.")
-        return False
-    print("Sending a verification code...", end="", flush=True)
+    # In --json mode the human narration goes to stderr so stdout carries only
+    # the receipt and a caller can pipe it straight into a parser.
+    say = (lambda *a, **k: print(*a, **k, file=sys.stderr)) if json_out else print
     try:
-        login.start(email, url)
-    except login.LoginError as e:
-        print(f"\nCouldn't start signup: {e}")
+        email = _ask("Enter your email: ", email, "--email")
+    except NonInteractive as e:
+        say(f"{e}. See `obsideo login --help`.")
         return False
-    print(" sent.")
-    print(f"Check {email} for a verification code (it may be in spam).")
-    code = input("Enter verification code: ").strip()
-    # Optional friend's referral code -> +1 GB (4 GB instead of 3). Blank = skip.
-    referral_code = input("Referral code from a friend (optional, Enter to skip): ").strip()
-    print("Verifying + provisioning storage...", end="", flush=True)
+    if not email:
+        say("Email is required.")
+        return False
+    say("Sending a verification code...", end="", flush=True)
+    try:
+        login.start(email, url, source=source)
+    except login.LoginError as e:
+        say(f"\nCouldn't start signup: {e}")
+        return False
+    say(" sent.")
+    say(f"Check {email} for a verification code (it may be in spam).")
+    try:
+        code = _ask("Enter verification code: ", code, "--code")
+        # Optional friend's referral code -> +1 GB (13 GB instead of 12).
+        referral_code = _ask("Referral code from a friend (optional, Enter to skip): ",
+                             referral, "--referral", required=False)
+    except NonInteractive:
+        # There is no way to ask for the code here, and the code only arrives by
+        # email anyway. This is the normal path for a caller without a terminal:
+        # stop cleanly at step one, having actually sent the code, and tell the
+        # caller how to finish. Success, not failure.
+        if json_out:
+            print(json.dumps({"ok": True, "stage": "code_sent", "email": email,
+                              "next": f"obsideo login --email {email} --code <6-digit code>"},
+                             indent=2))
+        else:
+            print(f"\nCode sent. Finish with:\n  obsideo login --email {email} --code <code>")
+        return True
+    say("Verifying + provisioning storage...", end="", flush=True)
     try:
         creds = login.verify(email, code, url, referral_code=referral_code or None)
     except login.LoginError as e:
-        print(f"\nVerification failed: {e}")
+        say(f"\nVerification failed: {e}")
         return False
-    print(" done.")
+    say(" done.")
     storage.reset_client()
     # Make sure the data key exists + nudge the user to back it up.
     crypto.data_key()
-    print(f"\nYou're all set. {creds.get('quota_gb', 3)} GB free.")
+    if json_out:
+        # A receipt a caller can parse. Deliberately omits the secret key:
+        # it is already persisted to the credentials file, and printing it
+        # would put it in logs and terminal scrollback.
+        print(json.dumps({
+            "ok": True,
+            "stage": "provisioned",
+            "email": email,
+            "quota_gb": creds.get("quota_gb"),
+            "endpoint": creds.get("endpoint"),
+            "region": creds.get("region"),
+            "bucket": creds.get("bucket"),
+            "access_key": creds.get("access_key"),
+            "account_exists": creds.get("account_exists"),
+            "credentials_file": str(config.CREDENTIALS_FILE),
+            "data_key_file": str(crypto.DATA_KEY_FILE),
+        }, indent=2))
+        return True
+    print(f"\nYou're all set. {creds.get('quota_gb', 12)} GB free.")
     if referral_code:
         if creds.get("referral_applied"):
             print(f"Referral applied - enjoy the extra space! (code {referral_code.upper()})")
@@ -383,7 +511,7 @@ class ObsideoShell(cmd.Cmd):
 
     # ── login ───────────────────────────────────────────────────────────────
     def do_login(self, arg):
-        """Sign up / log in with your email (email -> 3 GB free)."""
+        """Sign up / log in with your email (email -> 12 GB free)."""
         run_login()
         self._cwd = ""
         self._refresh_prompt()
@@ -641,10 +769,10 @@ class ObsideoShell(cmd.Cmd):
   OBSIDEO DRIVE - encrypted storage we can't read.
 
   Your files are encrypted on your device (AES-256-GCM) before they ever leave
-  it, then stored across three independent providers (RF=3). Obsideo's servers
+  it, then stored across three providers (RF=3). Obsideo's servers
   only ever see ciphertext - never your filenames, never your data.
 
-  - Free: 3 GB, no card, no expiry.
+  - Free: 12 GB, no card, no expiry.
   - Your keys live only on your machine (~/.obsideo). Back up data.key - lose it
     and the data is unrecoverable by design. That's the point: not even we can read it.
   - Install / update:  pip install -U obsideo-cli      More:  https://obsideo.io
@@ -659,7 +787,7 @@ class ObsideoShell(cmd.Cmd):
   A: No. They're encrypted on your device before upload; we only store ciphertext.
 
   Q: What's free?
-  A: 3 GB, no credit card, no expiry.
+  A: 12 GB, no credit card, no expiry.
 
   Q: What if I lose my key?
   A: Your key is ~/.obsideo/data.key - back it up. Without it the data can't be
@@ -889,10 +1017,19 @@ def main():
         ObsideoShell().onecmd("help")
         return
 
-    # `obsideo login` is interactive and handled specially.
+    # `obsideo login` is handled specially: it is the one command that may
+    # prompt, and the one an agent most needs to drive without prompting.
     if argv and argv[0] == "login":
-        ok = run_login()
-        if ok:
+        opts, err = _parse_login_args(argv[1:])
+        if err:
+            print(err)
+            print(LOGIN_USAGE)
+            sys.exit(2)
+        if opts.pop("help", False):
+            print(LOGIN_USAGE)
+            sys.exit(0)
+        ok = run_login(**opts)
+        if ok and not opts.get("json_out"):
             show_status()
         sys.exit(0 if ok else 1)
 
