@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "obsideo-cli"
-version = "0.3.1"
-description = "Obsideo Cloud - encrypted storage we can't read, for people and AI agents. 12 GB free, no card. Save, browse, and sync from your terminal; agent integration contract at obsideo.io/agents.md"
+version = "0.4.0"
+description = "Obsideo Cloud CLI - client-side encrypted storage for people and AI agents: content is encrypted on your machine before upload. 12 GB free, no card. Save, browse, and sync from your terminal; agent integration contract at obsideo.io/agents.md"
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}

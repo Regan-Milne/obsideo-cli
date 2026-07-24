@@ -469,7 +469,7 @@ def run_login(url: str | None = None, *, email: str | None = None,
 
 class ObsideoShell(cmd.Cmd):
     intro = (
-        "\n  Obsideo - encrypted storage we can't read.\n\n"
+        "\n  Obsideo - your content is encrypted before it leaves your machine.\n\n"
         "  Common commands:\n"
         "    put <file> / get <name>     upload / download\n"
         "    ls / cd / mkdir             browse your files\n"
@@ -766,7 +766,7 @@ class ObsideoShell(cmd.Cmd):
     def do_about(self, arg):
         """What Obsideo is."""
         print("""
-  OBSIDEO DRIVE - encrypted storage we can't read.
+  OBSIDEO DRIVE - content encrypted on your machine before upload.
 
   Your files are encrypted on your device (AES-256-GCM) before they ever leave
   it, then stored across three providers (RF=3). Obsideo's servers
@@ -1053,7 +1053,7 @@ def main():
 
     # First-run nudge: not logged in -> offer login.
     if not config.is_logged_in():
-        print("Welcome to Obsideo - encrypted storage we can't read.")
+        print("Welcome to Obsideo - your content is encrypted before it leaves your machine.")
         if input("Log in / sign up now? (Y/n): ").strip().lower() in ("", "y", "yes"):
             if not run_login():
                 return
