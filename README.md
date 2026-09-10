@@ -1,6 +1,6 @@
 # obsideo-cli
 
-**Client-side encrypted storage: your content is encrypted on your machine before upload, so the platform cannot read it.** (File names are stored in the clear; keep them non-sensitive.) Save, browse, and sync whatever you want
+**Client-side encrypted storage: your content is encrypted on your machine before upload, so the platform cannot read it.** File and folder names are encrypted too, by default (AES-SIV, keyed off your data key), so the platform sees opaque tokens rather than your filenames. Save, browse, and sync whatever you want
 from your terminal. Files are encrypted on your machine before they leave, so
 Obsideo's gateway, coordinator, and storage providers only ever see ciphertext.
 Your data lands on three providers (RF=3).

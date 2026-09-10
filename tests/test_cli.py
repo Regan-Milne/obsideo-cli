@@ -80,8 +80,26 @@ def test_ls_shows_files_and_folders(shell, capsys):
     fake.objs["docs/b.txt"] = crypto.encrypt(b"b")
     sh.do_ls("")
     out = capsys.readouterr().out
-    assert "[dir]  docs/" in out
-    assert "[file] a.txt" in out
+    assert "[dir]" in out and "docs/" in out
+    assert "[file]" in out and "a.txt" in out
+    # Nothing undecryptable here, so no marker and no footnote.
+    assert "?" not in out
+    assert "could not be decrypted" not in out
+
+
+def test_ls_marks_names_it_cannot_decrypt(shell, capsys, monkeypatch):
+    """A name written by another tool (or under another data key) falls back to
+    the raw object key. It must be marked, not passed off as a filename."""
+    sh, fake, tmp = shell
+    monkeypatch.setattr(cli.storage, "list_prefix", lambda prefix: {
+        "folders": [],
+        "files": [{"name": "v5oIrLwWoJNEy8Nhh", "key": "v5oIrLwWoJNEy8Nhh", "size": 63}],
+        "opaque": {"v5oIrLwWoJNEy8Nhh"},
+    })
+    sh.do_ls("")
+    out = capsys.readouterr().out
+    assert "?v5oIrLwWoJNEy8Nhh" in out
+    assert "could not be decrypted" in out
 
 
 def test_cd_pwd(shell, capsys):
