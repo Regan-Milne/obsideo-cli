@@ -235,11 +235,19 @@ def list_prefix(prefix: str = "", delimiter: str = "/") -> dict:
     else:
         enc_prefix = norm
 
+    # Names we could NOT decrypt with this account's key. safe_decrypt_name falls
+    # back to the raw object key so a mixed account still lists, but the caller
+    # has to be told, or `ls` prints ciphertext as though it were a filename.
+    opaque: set[str] = set()
+
     def _name(token: str) -> str:
         if not on:
             return token
         from obsideo_core import names
-        return names.safe_decrypt_name(token)[0]
+        name, was_encrypted = names.safe_decrypt_name(token)
+        if not was_encrypted:
+            opaque.add(name)
+        return name
 
     folders, files = [], []
     token = None
@@ -270,7 +278,7 @@ def list_prefix(prefix: str = "", delimiter: str = "/") -> dict:
 
     folders.sort()
     files.sort(key=lambda f: f["name"])
-    return {"folders": folders, "files": files}
+    return {"folders": folders, "files": files, "opaque": opaque}
 
 
 def mkdir(prefix: str) -> str:

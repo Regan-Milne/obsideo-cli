@@ -145,6 +145,23 @@ def show_banner() -> None:
     print(f"\033[36m{_BANNER}\033[0m", file=sys.stderr)
 
 
+# One-shots that print information and then leave the user at their system
+# prompt with nothing on screen saying what to type next. Found in first-run
+# testing: `obsideo account` printed a status block, exited, and the next thing
+# typed went to cmd.exe. Commands that act on files (put/get/ls) don't need it —
+# whoever ran them already knows what they're doing.
+_STRANDING_COMMANDS = {"account", "about", "faq", "messages", "refer", "config", "info"}
+
+
+def show_next_steps(command: str) -> None:
+    """One next-step line to stderr after an informational one-shot. TTY-gated,
+    so it never reaches an agent's stdout or a pipe."""
+    if not _chrome_enabled() or command.lower() not in _STRANDING_COMMANDS:
+        return
+    print("\033[2mNext:\033[0m obsideo ls  ·  obsideo put <file>  ·  "
+          "\033[36mobsideo\033[0m for the interactive shell", file=sys.stderr)
+
+
 def _usage_bar(pct: float, cells: int = 10) -> str:
     filled = min(cells, max(0, round(pct * cells)))
     return "#" * filled + "-" * (cells - filled)
@@ -509,6 +526,30 @@ class ObsideoShell(cmd.Cmd):
             return False
         return True
 
+    # ── help ────────────────────────────────────────────────────────────────
+    # Order the table reads in, roughly "get in, move around, move bytes, admin".
+    _HELP_ORDER = ["login", "ls", "cd", "pwd", "put", "get", "rm", "mkdir",
+                   "info", "account", "sync", "config", "refer", "messages",
+                   "about", "faq", "help", "exit"]
+
+    def do_help(self, arg):
+        """Show the command table, or 'help <command>' for one command."""
+        if arg:
+            return super().do_help(arg)
+        print("\n  Obsideo commands   (help <command> for detail)\n")
+        for name in self._HELP_ORDER:
+            fn = getattr(self, f"do_{name}", None)
+            if fn is None:
+                continue
+            # Summary = first sentence of the docstring, minus any "Usage:" tail,
+            # so the table can never drift from the per-command help.
+            doc = " ".join((fn.__doc__ or "").split())
+            summary = doc.split("Usage:")[0].split(". ")[0].strip().rstrip(".")
+            if len(summary) > 60:
+                summary = summary[:57].rstrip() + "..."
+            print(f"    {name:<9} {summary}")
+        print("\n    Aliases: upload = put, download = get, quit = exit\n")
+
     # ── login ───────────────────────────────────────────────────────────────
     def do_login(self, arg):
         """Sign up / log in with your email (email -> 12 GB free)."""
@@ -528,10 +569,19 @@ class ObsideoShell(cmd.Cmd):
         except Exception as e:
             print(f"Error: {e}")
             return
+        # Names this account's key could not decrypt: written by another tool or
+        # under another data key. Mark them instead of showing a raw object key
+        # as though it were a filename.
+        opaque = resp.get("opaque") or set()
         for d in resp["folders"]:
-            print(f"  [dir]  {d}/")
+            print(f"  [dir]  {'?' if d in opaque else ' '}{d}/")
         for f in resp["files"]:
-            print(f"  [file] {f['name']}  {_human(f['size'])}")
+            mark = "?" if f["name"] in opaque else " "
+            print(f"  [file] {mark}{f['name']}  {_human(f['size'])}")
+        if opaque:
+            print("\n  ? = name could not be decrypted with this account's key "
+                  "(written by another tool,\n      or before the key changed). "
+                  "The raw object key is shown instead.")
         if not resp["folders"] and not resp["files"]:
             print("  (empty)")
 
@@ -711,7 +761,7 @@ class ObsideoShell(cmd.Cmd):
 
     # ── account ───────────────────────────────────────────────────────────────
     def do_account(self, arg):
-        """Show your account: plan, storage used, and where your files/keys live."""
+        """Show your plan, usage, and where your files and keys live."""
         if not self._require_login():
             return
         from obsideo import sync as sync_mod
@@ -738,8 +788,17 @@ class ObsideoShell(cmd.Cmd):
                 print(f"     Used:  {_human(used)}")
             if info.get("object_count"):
                 print(f"     Files: {info['object_count']} object(s)")
-            if info.get("days_remaining"):
-                print(f"     Renews/expires in {info['days_remaining']} day(s)")
+            days = info.get("days_remaining")
+            if days:
+                # A no-expiry account (the promo tier) comes back as a ~100-year
+                # day count, which rendered as "Renews/expires in 36437 day(s)".
+                # That reads like a bug to anyone evaluating us, so name it.
+                try:
+                    forever = int(days) > 3650
+                except (TypeError, ValueError):
+                    forever = False
+                print("     Expires: never"
+                      if forever else f"     Renews/expires in {days} day(s)")
         else:
             print("     Plan:  Free")
             try:
@@ -1007,9 +1066,11 @@ def main():
         print(f"obsideo-cli {config.VERSION}")
         return
 
-    # Branded banner on every init (stderr, TTY-gated). Skip for `admin` so
-    # operator tooling output stays clean.
-    if not (argv and argv[0] == "admin"):
+    # Branded banner: interactive sessions and `login` only (stderr, TTY-gated).
+    # It used to print on every invocation, which meant six lines of ASCII art
+    # ahead of two lines of answer on `obsideo ls`. First-run testing found that
+    # reads as noise and pushes the actual output down the screen.
+    if not argv or argv[0] == "login":
         show_banner()
 
     # Standard --help / -h (cmd.Cmd would otherwise read "--help" as a command).
@@ -1046,6 +1107,7 @@ def main():
     # status line here — one-shots stay fast and scriptable.
     if argv:
         shell.onecmd(" ".join(argv))
+        show_next_steps(argv[0])
         return
 
     # Interactive session ("initialization"): offer an update if one's out.
