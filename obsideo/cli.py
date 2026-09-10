@@ -462,6 +462,21 @@ def run_login(url: str | None = None, *, email: str | None = None,
         return False
     say(" done.")
     storage.reset_client()
+    # A machine with NO key signing in to an account that already holds objects
+    # is the one moment this goes irreversibly wrong: data_key() below mints a
+    # fresh key, and everything already uploaded becomes unreadable here with no
+    # way back. Say so while the user can still import the real one.
+    if not crypto.has_data_key():
+        existing = _fetch_account_info() or {}
+        held = existing.get("object_count") or 0
+        if held > 0:
+            say("")
+            say(f"  !! This account already holds {held} object(s), encrypted with a key this")
+            say("     machine does not have. A new key is about to be created, and those")
+            say("     files will NOT be readable here (they show as '?' in ls).")
+            say("     If you have the key from your other machine, stop now and run:")
+            say("       obsideo key import <your OBSIDEO_DATA_KEY line>")
+            say("")
     # Make sure the data key exists + nudge the user to back it up.
     crypto.data_key()
     if json_out:
@@ -492,6 +507,8 @@ def run_login(url: str | None = None, *, email: str | None = None,
         print("Note: storage activation is finishing rollout; if an upload fails, retry shortly.")
     print("Your files are encrypted with a local key. Back it up:")
     print(f"  {crypto.DATA_KEY_FILE}")
+    print("  Save a copy now with 'obsideo key export' - without it, nobody can")
+    print("  recover your files, including us.")
     # Create the sync folder now so it's ready (never make the user mkdir it).
     try:
         from obsideo import sync as _sync
@@ -548,7 +565,7 @@ class ObsideoShell(cmd.Cmd):
     # ── help ────────────────────────────────────────────────────────────────
     # Order the table reads in, roughly "get in, move around, move bytes, admin".
     _HELP_ORDER = ["login", "ls", "cd", "pwd", "put", "get", "rm", "mkdir",
-                   "info", "account", "sync", "config", "refer", "messages",
+                   "info", "account", "key", "sync", "config", "refer", "messages",
                    "about", "faq", "help", "exit"]
 
     def do_help(self, arg):
@@ -841,6 +858,59 @@ class ObsideoShell(cmd.Cmd):
         print(f"     Keys: {config.CONFIG_DIR}  (back up data.key)")
         print("  ---------------------------------------------")
         print()
+
+    def do_key(self, arg):
+        """Back up, restore, or identify your encryption key. Usage: key status | key export [file] | key import <value|file> [--force]"""
+        toks = _tokens(arg)
+        sub = toks[0].lower() if toks else "status"
+        rest = toks[1:]
+
+        if sub == "status":
+            if not crypto.has_data_key():
+                print("  No encryption key on this machine yet.")
+                print("  One is created the first time you upload. If you already have an")
+                print("  account with files, run 'key import' FIRST or they stay unreadable here.")
+                return
+            print(f"  Key file:    {crypto.DATA_KEY_FILE}")
+            print(f"  Fingerprint: {crypto.data_key_fingerprint()}")
+            print("  Two machines showing the same fingerprint can read the same files.")
+            print("  Back it up with 'key export'. Lose it and the data is unreadable, by design.")
+
+        elif sub == "export":
+            target = next((t for t in rest if not t.startswith("--")), None)
+            hint = crypto.data_key_backup_hint()
+            if target:
+                path = Path(_unquote(target))
+                config.write_secret_file(path, hint + chr(10))
+                print(f"  Key written to {path}  (fingerprint {crypto.data_key_fingerprint()})")
+                print("  That file is as sensitive as everything it protects. Store it offline.")
+            else:
+                print("  Save this line somewhere safe. It is the only way to read your files")
+                print("  from another machine, and nobody can reissue it for you:")
+                print()
+                print(f"  {hint}")
+                print()
+                print("  On the other machine:  obsideo key import <that line>")
+
+        elif sub == "import":
+            if not rest:
+                print("Usage: key import <value|file> [--force]")
+                return
+            force = "--force" in rest
+            value = next((t for t in rest if not t.startswith("--")), "")
+            src = Path(_unquote(value))
+            try:
+                if src.exists():
+                    value = src.read_text(encoding="utf-8")
+                crypto.import_data_key(value, force=force)
+            except (ValueError, FileExistsError, OSError) as e:
+                print(f"  {e}")
+                return
+            print(f"  Key installed. Fingerprint: {crypto.data_key_fingerprint()}")
+            print("  Run 'ls' - files that showed as '?' should now show their real names.")
+
+        else:
+            print("Usage: key status | key export [file] | key import <value|file> [--force]")
 
     # ── about / faq / messages ────────────────────────────────────────────────
     def do_about(self, arg):
