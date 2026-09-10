@@ -152,3 +152,94 @@ def test_verify_omits_referral_code_when_blank(monkeypatch):
 
     login.verify("a@b.com", "123456", url="http://x")
     assert "referral_code" not in sent  # never send an empty/None code
+
+
+# ── New-credential propagation retry ─────────────────────────────────────────
+# A freshly issued key is unknown to the gateway until its next credential
+# refresh, so the first call after signup can 403 while nothing is wrong.
+
+def _client_error(code, status=403):
+    from botocore.exceptions import ClientError
+    return ClientError(
+        {"Error": {"Code": code}, "ResponseMetadata": {"HTTPStatusCode": status}},
+        "PutObject",
+    )
+
+
+@pytest.fixture
+def no_sleep(monkeypatch):
+    monkeypatch.setattr(storage.time, "sleep", lambda s: None)
+    monkeypatch.setattr(storage, "propagation_notifier", None)  # quiet by default
+
+
+@pytest.fixture
+def fresh_credentials(monkeypatch):
+    monkeypatch.setattr(storage, "_credentials_are_fresh", lambda: True)
+
+
+def test_retries_propagation_error_then_succeeds(no_sleep, fresh_credentials):
+    calls = []
+
+    def op():
+        calls.append(1)
+        if len(calls) < 3:
+            raise _client_error("InvalidAccessKeyId")
+        return "uploaded"
+
+    assert storage.with_propagation_retry(op) == "uploaded"
+    assert len(calls) == 3
+
+
+def test_notifier_fires_once(no_sleep, fresh_credentials, monkeypatch):
+    seen = []
+    monkeypatch.setattr(storage, "propagation_notifier", lambda: seen.append(1))
+    calls = []
+
+    def op():
+        calls.append(1)
+        if len(calls) < 4:
+            raise _client_error("NoSuchBucket")
+        return "ok"
+
+    storage.with_propagation_retry(op)
+    assert seen == [1]  # said once, not once per retry
+
+
+def test_established_account_fails_fast(no_sleep, monkeypatch):
+    """Same error on an old account means a revoked key, not propagation.
+    Retrying for a minute there would hide a real failure behind a hang."""
+    monkeypatch.setattr(storage, "_credentials_are_fresh", lambda: False)
+    calls = []
+
+    def op():
+        calls.append(1)
+        raise _client_error("InvalidAccessKeyId")
+
+    with pytest.raises(Exception):
+        storage.with_propagation_retry(op)
+    assert len(calls) == 1  # no retry
+
+
+def test_non_propagation_error_is_not_retried(no_sleep, fresh_credentials):
+    calls = []
+
+    def op():
+        calls.append(1)
+        raise _client_error("SignatureDoesNotMatch", status=400)
+
+    with pytest.raises(Exception):
+        storage.with_propagation_retry(op)
+    assert len(calls) == 1
+
+
+def test_gives_up_at_the_deadline(no_sleep, fresh_credentials):
+    """A key that never propagates must surface the real error, not loop."""
+    calls = []
+
+    def op():
+        calls.append(1)
+        raise _client_error("AccessDenied")
+
+    with pytest.raises(Exception):
+        storage.with_propagation_retry(op)
+    assert 1 < len(calls) <= len(storage._PROPAGATION_BACKOFF) + 1

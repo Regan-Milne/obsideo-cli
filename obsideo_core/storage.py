@@ -16,6 +16,7 @@ Gateway constraints engineered around:
 """
 
 import os
+import time
 from pathlib import Path
 
 from obsideo_core import config
@@ -108,6 +109,70 @@ def reset_client() -> None:
     _client = None
 
 
+# ── New-credential propagation ──────────────────────────────────────────────
+# A freshly issued key is real at the coordinator but unknown to the GATEWAY
+# until the gateway's next credential refresh (it pulls the map on a ticker).
+# So the first write after signup can fail with InvalidAccessKeyId / AccessDenied
+# / NoSuchBucket even though nothing is wrong. Measured on three live signups:
+# 15.9 s, 23.6 s and 32.8 s. Untreated, the very first thing a new user does is
+# the thing that fails, which is the worst possible place to put a rough edge.
+#
+# Retrying is only correct for a JUST-ISSUED credential. On an established
+# account the same error means a revoked or wrong key, and the right answer
+# there is to fail fast with the real error rather than hang for a minute.
+
+_PROPAGATION_CODES = {"InvalidAccessKeyId", "AccessDenied", "NoSuchBucket",
+                      "Forbidden", "403"}
+_FRESH_CREDENTIALS_WINDOW = 15 * 60   # a login this recent may still be settling
+_PROPAGATION_DEADLINE = 75            # seconds; ~2x the worst window we've measured
+_PROPAGATION_BACKOFF = (2, 3, 5, 5, 8, 8, 10, 10, 12, 12)
+
+# Set by the front-end to report waiting to a human (see cli.py). Kept as a hook
+# so this core module never writes to stdout/stderr itself.
+propagation_notifier = None
+
+
+def _credentials_are_fresh() -> bool:
+    """True if `obsideo login` wrote the credentials file recently."""
+    try:
+        age = time.time() - config.CREDENTIALS_FILE.stat().st_mtime
+    except OSError:
+        return False
+    return 0 <= age <= _FRESH_CREDENTIALS_WINDOW
+
+
+def _is_propagation_error(exc) -> bool:
+    from botocore.exceptions import ClientError
+    if not isinstance(exc, ClientError):
+        return False
+    code = str(exc.response.get("Error", {}).get("Code", ""))
+    status = exc.response.get("ResponseMetadata", {}).get("HTTPStatusCode")
+    return code in _PROPAGATION_CODES or status == 403
+
+
+def with_propagation_retry(op):
+    """Run `op`, retrying while a just-issued credential is still propagating to
+    the gateway. Re-raises immediately for an established account, for any error
+    that isn't a propagation symptom, and once the deadline passes."""
+    if not _credentials_are_fresh():
+        return op()
+    deadline = time.time() + _PROPAGATION_DEADLINE
+    attempts = len(_PROPAGATION_BACKOFF) + 1
+    announced = False
+    for i in range(attempts):
+        try:
+            return op()
+        except Exception as e:
+            delay = _PROPAGATION_BACKOFF[min(i, len(_PROPAGATION_BACKOFF) - 1)]
+            last = i == attempts - 1
+            if last or not _is_propagation_error(e) or time.time() + delay > deadline:
+                raise
+            if not announced and propagation_notifier:
+                propagation_notifier()
+                announced = True
+            time.sleep(delay)
+
+
 def ensure_bucket() -> None:
     from botocore.exceptions import ClientError
     s3, b = _s3(), bucket()
@@ -130,23 +195,33 @@ def put(key: str, data: bytes) -> str:
     """Upload bytes to key. Returns the key."""
     import io
     from boto3.s3.transfer import TransferConfig
-    s3 = _s3()
-    ensure_bucket()
-    transfer = TransferConfig(multipart_threshold=_MULTIPART_CHUNK,
-                              multipart_chunksize=_MULTIPART_CHUNK)
-    s3.upload_fileobj(io.BytesIO(data), bucket(), _skey(key), Config=transfer)
-    return key
+
+    def _once():
+        s3 = _s3()
+        ensure_bucket()
+        transfer = TransferConfig(multipart_threshold=_MULTIPART_CHUNK,
+                                  multipart_chunksize=_MULTIPART_CHUNK)
+        s3.upload_fileobj(io.BytesIO(data), bucket(), _skey(key), Config=transfer)
+        return key
+
+    # Wraps ensure_bucket too: on a fresh account the bucket lookup is the first
+    # authenticated call, so it fails before the upload ever starts.
+    return with_propagation_retry(_once)
 
 
 def upload_file(local_path: Path, key: str) -> str:
     from boto3.s3.transfer import TransferConfig
-    s3 = _s3()
-    ensure_bucket()
-    transfer = TransferConfig(multipart_threshold=_MULTIPART_CHUNK,
-                              multipart_chunksize=_MULTIPART_CHUNK)
-    with open(local_path, "rb") as f:
-        s3.upload_fileobj(f, bucket(), _skey(key), Config=transfer)
-    return key
+
+    def _once():
+        s3 = _s3()
+        ensure_bucket()
+        transfer = TransferConfig(multipart_threshold=_MULTIPART_CHUNK,
+                                  multipart_chunksize=_MULTIPART_CHUNK)
+        with open(local_path, "rb") as f:
+            s3.upload_fileobj(f, bucket(), _skey(key), Config=transfer)
+        return key
+
+    return with_propagation_retry(_once)
 
 
 def get(key: str) -> bytes:

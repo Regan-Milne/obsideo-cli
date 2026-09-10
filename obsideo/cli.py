@@ -162,6 +162,18 @@ def show_next_steps(command: str) -> None:
           "\033[36mobsideo\033[0m for the interactive shell", file=sys.stderr)
 
 
+def _announce_propagation_wait() -> None:
+    """Said once, when a brand-new account's first call reaches the gateway
+    before its credentials have. Always shown, TTY or not: a script that appears
+    to hang for a minute needs a reason on stderr just as much as a person does."""
+    print("  New credentials are still reaching the storage gateway "
+          "(this takes up to about half a minute on a new account). Retrying...",
+          file=sys.stderr)
+
+
+storage.propagation_notifier = _announce_propagation_wait
+
+
 def _usage_bar(pct: float, cells: int = 10) -> str:
     filled = min(cells, max(0, round(pct * cells)))
     return "#" * filled + "-" * (cells - filled)
@@ -565,7 +577,9 @@ class ObsideoShell(cmd.Cmd):
         target = _unquote(arg.strip())
         prefix = self._resolve(target) if target else self._cwd
         try:
-            resp = storage.list_prefix(prefix)
+            # `ls` is what the post-login hint tells a new user to run, so it is
+            # often the first call a fresh credential ever makes.
+            resp = storage.with_propagation_retry(lambda: storage.list_prefix(prefix))
         except Exception as e:
             print(f"Error: {e}")
             return
