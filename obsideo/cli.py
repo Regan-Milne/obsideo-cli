@@ -422,14 +422,21 @@ def run_login(url: str | None = None, *, email: str | None = None,
     if not email:
         say("Email is required.")
         return False
-    say("Sending a verification code...", end="", flush=True)
-    try:
-        login.start(email, url, source=source)
-    except login.LoginError as e:
-        say(f"\nCouldn't start signup: {e}")
-        return False
-    say(" sent.")
-    say(f"Check {email} for a verification code (it may be in spam).")
+    # Step one — unless the caller already holds a code, in which case this is
+    # the SECOND of the two non-interactive calls and step one already ran.
+    # Sending another code here invalidates the one they are holding, and inside
+    # the shim's 30 s resend limit it fails the login outright, so the documented
+    # two-call flow could never complete. `source` is recorded by auth/start on
+    # the first call, so skipping it here loses no attribution.
+    if not code:
+        say("Sending a verification code...", end="", flush=True)
+        try:
+            login.start(email, url, source=source)
+        except login.LoginError as e:
+            say(f"\nCouldn't start signup: {e}")
+            return False
+        say(" sent.")
+        say(f"Check {email} for a verification code (it may be in spam).")
     try:
         code = _ask("Enter verification code: ", code, "--code")
         # Optional friend's referral code -> +1 GB (13 GB instead of 12).
