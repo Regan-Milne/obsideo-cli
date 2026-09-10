@@ -439,3 +439,87 @@ def test_account_shows_referral_line(monkeypatch, tmp_path, capsys):
     cli.ObsideoShell().do_account("")
     out = capsys.readouterr().out
     assert "Referrals: code ABCD234" in out and "4 GB earned" in out
+
+
+# ── Key portability ──────────────────────────────────────────────────────────
+# data_key() mints os.urandom(32) whenever the file is absent, so signing in on
+# a second machine silently orphans everything already uploaded. These cover the
+# escape hatch and, more importantly, the warning that fires before it happens.
+
+@pytest.fixture
+def key_dir(tmp_path, monkeypatch):
+    """Isolate the config dir so nothing here can touch a real ~/.obsideo."""
+    monkeypatch.delenv("OBSIDEO_DATA_KEY", raising=False)
+    monkeypatch.setattr(crypto.config, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(crypto, "DATA_KEY_FILE", tmp_path / "data.key")
+    return tmp_path
+
+
+def test_has_data_key_false_on_a_fresh_machine(key_dir):
+    assert crypto.has_data_key() is False
+
+
+def test_import_accepts_bare_hex_and_the_exported_line(key_dir):
+    raw = os.urandom(32).hex()
+    crypto.import_data_key(raw)
+    first = crypto.data_key_fingerprint()
+    crypto.DATA_KEY_FILE.unlink()
+    crypto.import_data_key(f"OBSIDEO_DATA_KEY={raw}")
+    assert crypto.data_key_fingerprint() == first
+    assert crypto.has_data_key() is True
+
+
+def test_import_rejects_malformed_values(key_dir):
+    for bad in ("not-hex", "abcd", os.urandom(16).hex()):
+        with pytest.raises(ValueError):
+            crypto.import_data_key(bad)
+
+
+def test_import_refuses_to_clobber_without_force(key_dir):
+    crypto.import_data_key(os.urandom(32).hex())
+    before = crypto.data_key_fingerprint()
+    with pytest.raises(FileExistsError):
+        crypto.import_data_key(os.urandom(32).hex())
+    assert crypto.data_key_fingerprint() == before      # untouched
+    crypto.import_data_key(os.urandom(32).hex(), force=True)
+    assert crypto.data_key_fingerprint() != before
+
+
+def test_fingerprint_never_reveals_the_key(key_dir):
+    raw = os.urandom(32).hex()
+    crypto.import_data_key(raw)
+    fp = crypto.data_key_fingerprint()
+    assert len(fp) == 16 and fp not in raw and raw not in fp
+
+
+def test_login_warns_before_minting_a_key_over_an_account_that_has_objects(monkeypatch, capsys, tmp_path):
+    """The whole point: a machine with no key signing in to an account that
+    already holds files must be told BEFORE the fresh key is created."""
+    monkeypatch.delenv("OBSIDEO_DATA_KEY", raising=False)
+    monkeypatch.setattr(crypto, "DATA_KEY_FILE", tmp_path / "data.key")
+    monkeypatch.setattr(cli.crypto, "has_data_key", lambda: False)
+    monkeypatch.setattr(cli.crypto, "data_key", lambda: b"\x00" * 32)
+    monkeypatch.setattr(cli, "_fetch_account_info", lambda: {"object_count": 7})
+    monkeypatch.setattr(cli, "_fetch_referral", lambda: None)
+    monkeypatch.setattr(cli.storage, "reset_client", lambda: None)
+    monkeypatch.setattr(cli.login, "verify", lambda *a, **k: {"quota_gb": 12})
+
+    cli.run_login(email="x@example.com", code="123456")
+    out = capsys.readouterr().out
+    assert "already holds 7 object(s)" in out
+    assert "key import" in out
+
+
+def test_login_stays_quiet_for_a_genuinely_new_account(monkeypatch, capsys, tmp_path):
+    monkeypatch.delenv("OBSIDEO_DATA_KEY", raising=False)
+    monkeypatch.setattr(crypto, "DATA_KEY_FILE", tmp_path / "data.key")
+    monkeypatch.setattr(cli.crypto, "has_data_key", lambda: False)
+    monkeypatch.setattr(cli.crypto, "data_key", lambda: b"\x00" * 32)
+    monkeypatch.setattr(cli, "_fetch_account_info", lambda: {"object_count": 0})
+    monkeypatch.setattr(cli, "_fetch_referral", lambda: None)
+    monkeypatch.setattr(cli.storage, "reset_client", lambda: None)
+    monkeypatch.setattr(cli.login, "verify", lambda *a, **k: {"quota_gb": 12})
+
+    cli.run_login(email="x@example.com", code="123456")
+    out = capsys.readouterr().out
+    assert "already holds" not in out

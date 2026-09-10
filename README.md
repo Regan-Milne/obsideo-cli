@@ -53,8 +53,33 @@ obsideo:/trip/ get cat.jpg ./downloaded.jpg
 | `mkdir <name>` | Create a folder |
 | `info <remote>` | Show object metadata |
 | `account` | Show storage used vs. your free quota |
+| `key status\|export\|import` | Back up or restore your encryption key (see below) |
 | `sync push\|pull\|status` | Sync your local folder with Obsideo |
 | `config [set k v]` | Show or change settings |
+
+## Using it on more than one machine
+
+Your files are encrypted with a key generated on your machine and held only
+there. **A second machine that logs in without that key gets a new one**, and
+your existing files stay unreadable on it (they show as `?` in `ls`). Nobody can
+reissue the key for you, us included.
+
+So before you need it:
+
+```
+obsideo key export          # prints the line to save, or: key export ~/obsideo-key.txt
+```
+
+Then on the other machine, before uploading anything:
+
+```
+obsideo key import OBSIDEO_DATA_KEY=...
+obsideo key status          # same fingerprint on both = both can read the same files
+```
+
+`key status` prints a fingerprint, not the key, so it is safe to compare over
+any channel. Importing over an existing key needs `--force`, because it makes
+whatever the old key protected unreadable.
 
 ## How it works
 
