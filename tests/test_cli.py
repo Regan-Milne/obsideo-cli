@@ -523,3 +523,94 @@ def test_login_stays_quiet_for_a_genuinely_new_account(monkeypatch, capsys, tmp_
     cli.run_login(email="x@example.com", code="123456")
     out = capsys.readouterr().out
     assert "already holds" not in out
+
+
+# ── upgrade (paid plan) ──────────────────────────────────────────────────────
+
+def _billing_fake(calls, responses):
+    """responses: {(method, path): (status, json)}; records every call."""
+    def fake(method, path, body=None):
+        calls.append((method, path, body))
+        return responses.get((method, path), (0, None))
+    return fake
+
+
+def test_upgrade_free_account_opens_checkout(monkeypatch, capsys):
+    monkeypatch.setattr(cli.config, "is_logged_in", lambda: True)
+    monkeypatch.setattr(cli.config, "account_token", lambda: "obt_x")
+    monkeypatch.setattr(cli, "_show_url", lambda label, url: print(f"  {label} {url}"))
+    calls = []
+    monkeypatch.setattr(cli, "_billing_call", _billing_fake(calls, {
+        ("GET", "/v1/billing"): (200, {"enabled": True, "plan": "free", "block_gb": 200.0, "block_price_usd": 5}),
+        ("POST", "/v1/billing/checkout"): (200, {"url": "https://checkout.stripe.com/c/pay/cs_1", "monthly_usd": 10.0}),
+    }))
+    cli.ObsideoShell().do_upgrade("2")
+    out = capsys.readouterr().out
+    assert ("POST", "/v1/billing/checkout", {"blocks": 2}) in calls
+    assert "2 x 200 GB = 400 GB for $10.00/month" in out
+    assert "https://checkout.stripe.com/c/pay/cs_1" in out
+    assert "Nothing is charged until you finish checkout" in out
+
+
+def test_upgrade_existing_plan_needs_yes_before_stepup(monkeypatch, capsys):
+    monkeypatch.setattr(cli.config, "is_logged_in", lambda: True)
+    monkeypatch.setattr(cli.config, "account_token", lambda: "obt_x")
+    calls = []
+    plan = {"enabled": True, "plan": "agent_cloud_memory", "blocks": 1, "monthly_usd": 5.0,
+            "status": "active", "block_gb": 200.0, "block_price_usd": 5, "pending_upgrade": None}
+    monkeypatch.setattr(cli, "_billing_call", _billing_fake(calls, {
+        ("GET", "/v1/billing"): (200, plan),
+        ("POST", "/v1/billing/stepup"): (200, {"blocks": 3, "monthly_usd": 15.0, "changed": True}),
+    }))
+    # Declined: nothing sent.
+    monkeypatch.setattr("builtins.input", lambda prompt="": "no")
+    cli.ObsideoShell().do_upgrade("3")
+    out = capsys.readouterr().out
+    assert "3 x 200 GB = 600 GB for $15.00/month (now $5.00/month)" in out
+    assert "No change made" in out
+    assert not [c for c in calls if c[1] == "/v1/billing/stepup"]
+    # Agreed: exactly one explicit call.
+    monkeypatch.setattr("builtins.input", lambda prompt="": "yes")
+    cli.ObsideoShell().do_upgrade("3")
+    out = capsys.readouterr().out
+    assert [c for c in calls if c[1] == "/v1/billing/stepup"] == [("POST", "/v1/billing/stepup", {"blocks": 3})]
+    assert "Done. Your plan is now 3 block(s) at $15.00/month" in out
+
+
+def test_upgrade_shows_plan_and_pending_offer(monkeypatch, capsys):
+    monkeypatch.setattr(cli.config, "is_logged_in", lambda: True)
+    monkeypatch.setattr(cli.config, "account_token", lambda: "obt_x")
+    plan = {"enabled": True, "plan": "agent_cloud_memory", "blocks": 1, "monthly_usd": 5.0,
+            "status": "active", "block_gb": 200.0, "block_price_usd": 5,
+            "pending_upgrade": {"to_blocks": 2, "new_monthly_usd": 10.0}}
+    monkeypatch.setattr(cli, "_billing_call", _billing_fake([], {("GET", "/v1/billing"): (200, plan)}))
+    cli.ObsideoShell().do_upgrade("")
+    out = capsys.readouterr().out
+    assert "Your plan: 1 x 200 GB = 200 GB for $5.00/month" in out
+    assert "Offer waiting: 2 x 200 GB for $10.00/month - run 'upgrade 2' to accept" in out
+
+
+def test_upgrade_portal_and_disabled(monkeypatch, capsys):
+    monkeypatch.setattr(cli.config, "is_logged_in", lambda: True)
+    monkeypatch.setattr(cli.config, "account_token", lambda: "obt_x")
+    monkeypatch.setattr(cli, "_show_url", lambda label, url: print(f"  {label} {url}"))
+    monkeypatch.setattr(cli, "_billing_call", _billing_fake([], {
+        ("GET", "/v1/billing"): (200, {"enabled": True, "plan": "agent_cloud_memory", "blocks": 1}),
+        ("POST", "/v1/billing/portal"): (200, {"url": "https://billing.stripe.com/p/s"}),
+    }))
+    cli.ObsideoShell().do_upgrade("portal")
+    assert "https://billing.stripe.com/p/s" in capsys.readouterr().out
+
+    monkeypatch.setattr(cli, "_billing_call", _billing_fake([], {
+        ("GET", "/v1/billing"): (404, {"detail": {"error": "billing_disabled"}}),
+    }))
+    cli.ObsideoShell().do_upgrade("")
+    assert "isn't switched on yet" in capsys.readouterr().out
+
+
+def test_upgrade_without_token_guides_to_login(monkeypatch, capsys):
+    monkeypatch.setattr(cli.config, "is_logged_in", lambda: True)
+    monkeypatch.setattr(cli.config, "account_token", lambda: None)
+    cli.ObsideoShell().do_upgrade("")
+    out = capsys.readouterr().out.lower()
+    assert "login" in out and "email" in out

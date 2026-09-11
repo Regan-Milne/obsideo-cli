@@ -565,7 +565,7 @@ class ObsideoShell(cmd.Cmd):
     # ── help ────────────────────────────────────────────────────────────────
     # Order the table reads in, roughly "get in, move around, move bytes, admin".
     _HELP_ORDER = ["login", "ls", "cd", "pwd", "put", "get", "rm", "mkdir",
-                   "info", "account", "key", "sync", "config", "refer", "messages",
+                   "info", "account", "key", "sync", "config", "refer", "upgrade", "messages",
                    "about", "faq", "help", "exit"]
 
     def do_help(self, arg):
@@ -821,7 +821,7 @@ class ObsideoShell(cmd.Cmd):
                 print(f"     Used:  {_human(used)} / {_human(quota)} ({pct*100:.1f}%)")
                 print(f"            [{'#'*filled}{'-'*(bar_len-filled)}]")
                 if pct >= 0.8:
-                    print("     Near your limit - reply to any Obsideo email to upgrade.")
+                    print("     Near your limit - run 'upgrade' for more space.")
             else:
                 print(f"     Used:  {_human(used)}")
             if info.get("object_count"):
@@ -984,6 +984,93 @@ class ObsideoShell(cmd.Cmd):
         print()
 
     # ── refer ─────────────────────────────────────────────────────────────────
+    def do_upgrade(self, arg):
+        """Get more space with a paid plan. Usage: upgrade | upgrade <blocks> | upgrade portal
+
+        Plans are 200 GB blocks at $5/month each, billed by card through Stripe.
+        'upgrade' opens checkout (or shows your plan if you already have one);
+        'upgrade 3' changes an existing plan to 3 blocks, after you confirm;
+        'upgrade portal' opens the billing portal (cancel, change card, invoices).
+        Nothing is ever charged or changed without that explicit step."""
+        if not self._require_login():
+            return
+        if not config.account_token():
+            print("\n  Paid plans need an email login. Run 'login' with your email first.\n")
+            return
+        toks = _tokens(arg)
+        sub = toks[0].lower() if toks else ""
+
+        status, plan = _billing_call("GET", "/v1/billing")
+        if status == 404 or (plan and plan.get("enabled") is False):
+            print("\n  Card billing isn't switched on yet. Reply to any Obsideo email for more space.\n")
+            return
+        if status != 200 or not plan:
+            print("\n  Couldn't reach billing just now - try again shortly.\n")
+            return
+        block_gb = float(plan.get("block_gb") or 200)
+        price = float(plan.get("block_price_usd") or 5)
+
+        if sub == "portal":
+            status, out = _billing_call("POST", "/v1/billing/portal")
+            if status == 200 and out and out.get("url"):
+                _show_url("Manage your plan (cancel, change card, invoices):", out["url"])
+            else:
+                print(f"\n  {_billing_detail(out)}\n")
+            return
+
+        if plan.get("plan") != "agent_cloud_memory":
+            blocks = _int_arg(sub, 1)
+            if blocks < 1:
+                print("\n  Usage: upgrade [blocks]   (whole number of 200 GB blocks, default 1)\n")
+                return
+            status, out = _billing_call("POST", "/v1/billing/checkout", {"blocks": blocks})
+            if status == 200 and out and out.get("url"):
+                monthly = float(out.get("monthly_usd") or blocks * price)
+                print(f"\n  {blocks} x {_gb(block_gb)} GB = {_gb(blocks * block_gb)} GB for ${monthly:.2f}/month.")
+                print("  Nothing is charged until you finish checkout.")
+                _show_url("Open this to pay:", out["url"])
+            else:
+                print(f"\n  {_billing_detail(out)}\n")
+            return
+
+        # Already on a plan.
+        cur = int(plan.get("blocks") or 0)
+        monthly_now = float(plan.get("monthly_usd") or cur * price)
+        if not sub:
+            print(f"\n  Your plan: {cur} x {_gb(block_gb)} GB = {_gb(cur * block_gb)} GB "
+                  f"for ${monthly_now:.2f}/month ({plan.get('status') or 'active'})")
+            pu = plan.get("pending_upgrade")
+            if pu:
+                print(f"  Offer waiting: {pu['to_blocks']} x {_gb(block_gb)} GB for "
+                      f"${float(pu['new_monthly_usd']):.2f}/month - run 'upgrade {pu['to_blocks']}' to accept.")
+            print("  'upgrade <blocks>' changes the size; 'upgrade portal' cancels or changes your card.\n")
+            return
+        blocks = _int_arg(sub, 0)
+        if blocks < 1:
+            print("\n  Usage: upgrade <blocks>   (whole number of 200 GB blocks) or upgrade portal\n")
+            return
+        if blocks == cur:
+            print(f"\n  You're already on {cur} block(s).\n")
+            return
+        new_monthly = blocks * price
+        print(f"\n  This changes your plan to {blocks} x {_gb(block_gb)} GB = {_gb(blocks * block_gb)} GB "
+              f"for ${new_monthly:.2f}/month (now ${monthly_now:.2f}/month).")
+        if blocks > cur:
+            print("  The difference for the rest of this billing period is charged to your card today.")
+        try:
+            answer = input("  Type yes to agree: ").strip().lower()
+        except EOFError:
+            answer = ""
+        if answer != "yes":
+            print("  No change made.\n")
+            return
+        status, out = _billing_call("POST", "/v1/billing/stepup", {"blocks": blocks})
+        if status == 200 and out:
+            print(f"  Done. Your plan is now {out.get('blocks', blocks)} block(s) at "
+                  f"${float(out.get('monthly_usd') or new_monthly):.2f}/month. Space updates within a minute.\n")
+        else:
+            print(f"  {_billing_detail(out)}\n")
+
     def do_refer(self, arg):
         """Invite friends for free space. Usage: refer
 
@@ -1121,6 +1208,59 @@ def _fetch_referral() -> dict | None:
             return json.loads(resp.read().decode())
     except Exception:
         return None
+
+
+def _billing_call(method: str, path: str, body: dict | None = None) -> tuple[int, dict | None]:
+    """One call to the signup service's billing endpoints with the account
+    token. Returns (http status, decoded json or None); 0 when unreachable.
+    Error bodies are returned too, so the caller can show the service's own
+    labeled reason instead of a generic failure."""
+    token = config.account_token()
+    if not token:
+        return 0, None
+    data = json.dumps(body or {}).encode() if method == "POST" else None
+    req = urllib.request.Request(
+        f"{config.signup_url()}{path}", data=data, method=method,
+        headers={"Authorization": f"Bearer {token}", "User-Agent": config.USER_AGENT,
+                 "Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=20, context=config.ssl_context()) as resp:
+            return resp.status, json.loads(resp.read().decode() or "{}")
+    except urllib.error.HTTPError as e:
+        try:
+            return e.code, json.loads(e.read().decode() or "{}")
+        except Exception:
+            return e.code, None
+    except Exception:
+        return 0, None
+
+
+def _billing_detail(out: dict | None) -> str:
+    if not out:
+        return "Couldn't reach billing just now - try again shortly."
+    d = out.get("detail", out)
+    if isinstance(d, dict):
+        return str(d.get("message") or d.get("error") or d)
+    return str(d)
+
+
+def _int_arg(tok: str, default: int) -> int:
+    if not tok:
+        return default
+    try:
+        return int(tok)
+    except ValueError:
+        return -1
+
+
+def _show_url(label: str, url: str) -> None:
+    print(f"\n  {label}\n  {url}\n")
+    try:
+        import webbrowser
+        webbrowser.open(url)
+    except Exception:
+        pass
 
 
 def _fetch_account_info() -> dict | None:
