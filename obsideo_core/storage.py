@@ -365,9 +365,15 @@ def mkdir(prefix: str) -> str:
     return norm
 
 
-def verify_pop(key: str) -> dict:
-    """Confirm an object is stored + report durability posture (RF=3)."""
-    h = head(key)
-    if h is None:
-        return {"stored": False, "size_bytes": None, "replication_factor": 3, "backend": "obsideo"}
-    return {"stored": True, "size_bytes": h["size"], "replication_factor": 3, "backend": "obsideo"}
+# No verification helper lives here, deliberately. A HEAD against the gateway
+# proves the gateway will answer for a key — not that any provider still holds
+# the bytes, and not how many do. A `verify_pop` used to sit here doing exactly
+# that while returning a hardcoded replication_factor of 3; nothing called it,
+# and it would have reported 3 for an object sitting below RF. A constant is not
+# an observation. Real possession verification means challenging each holder
+# directly and checking its signed response against a merkle root recorded at
+# upload time — that ships today only in the MCP server (`obsideo-mcp`, the
+# `verify` tool). This client records no root at upload and holds no coordinator
+# API key, so it cannot do it yet; `head`/`exists` are what they say they are,
+# and `obsideo info` is the honest surface over them. Do not reintroduce a
+# proof-shaped wrapper around HEAD.
