@@ -18,7 +18,7 @@ import urllib.request
 import json
 from pathlib import Path
 
-from obsideo_core import config, crypto, identity, login, storage
+from obsideo_core import config, crypto, fetch, identity, login, storage
 
 
 def _unquote(s: str) -> str:
@@ -537,6 +537,10 @@ class ObsideoShell(cmd.Cmd):
     def __init__(self):
         super().__init__()
         self._cwd = ""  # S3 key prefix; "" = root
+        # Process exit status for one-shot use (`obsideo get x`): commands that
+        # fail set it non-zero so scripts and agents can tell. Interactive
+        # sessions ignore it.
+        self.exit_code = 0
         self._refresh_prompt()
 
     def precmd(self, line: str) -> str:
@@ -692,6 +696,10 @@ class ObsideoShell(cmd.Cmd):
         except OSError as e:
             print(f"  Error reading {local}: {e}")
             return
+        # TODO(chunked-format-v1): switch writes to obsideo_core.chunked
+        # (encrypt_chunked + metadata_for, sent as x-amz-meta-*) once the
+        # streaming-put branch lands, so CLI and browser write one format. Reads
+        # of both formats already work (see fetch.restore).
         body = crypto.encrypt(raw) if do_encrypt else raw
         verb = "Encrypting + uploading" if do_encrypt else "Uploading"
         print(f"  {verb} {key.rsplit('/', 1)[-1]} ({_human(len(raw))})...")
@@ -724,28 +732,45 @@ class ObsideoShell(cmd.Cmd):
 
     # ── get / download ────────────────────────────────────────────────────────
     def do_get(self, arg):
-        """Download a file. Usage: get <remote_file> [local_path]"""
+        """Download and decrypt a file.
+
+        Reads both content formats: the CLI's single-stream AES-256-GCM and the
+        browser app's chunked format (obsideo-chunked-v1), chosen by the
+        object's metadata. A file this key cannot decrypt is NOT saved.
+
+        Usage:
+          get <remote_file> [local_path] [--raw]
+
+          --raw   save the stored bytes as they are, without decrypting (for a
+                  file uploaded with put --no-encrypt, or to keep the ciphertext)
+        """
         if not self._require_login():
             return
         parts = _tokens(arg)
+        raw = "--raw" in parts
+        parts = [p for p in parts if p != "--raw"]
         if not parts:
-            print("Usage: get <remote_file> [local_path]")
+            print("Usage: get <remote_file> [local_path] [--raw]")
+            self.exit_code = 2
             return
         key = self._resolve(parts[0])
+        name = key.rsplit("/", 1)[-1]
         local = Path(parts[1]).expanduser() if len(parts) > 1 else Path(Path(parts[0]).name)
         print(f"  Downloading /{key}...")
         try:
-            blob = storage.get(key)
+            result = fetch.restore(key, local, raw=raw, name=name)
+        except fetch.RestoreError as e:
+            print(f"  {e}", file=sys.stderr)
+            print(f"  Nothing was saved. If {name} was uploaded unencrypted "
+                  f"(put --no-encrypt), use: get {parts[0]} --raw", file=sys.stderr)
+            self.exit_code = 1
+            return
         except Exception as e:
             print(f"  Error: {e}")
+            self.exit_code = 1
             return
-        try:
-            raw = crypto.decrypt(blob)
-        except Exception:
-            raw = blob  # stored unencrypted, or wrong key
-        local.parent.mkdir(parents=True, exist_ok=True)
-        local.write_bytes(raw)
-        print(f"  Saved to: {local} ({_human(len(raw))})")
+        note = " (stored bytes, not decrypted)" if raw else ""
+        print(f"  Saved to: {local} ({_human(result['size'])}){note}")
 
     do_download = do_get
 
@@ -1029,17 +1054,28 @@ class ObsideoShell(cmd.Cmd):
 
     # ── sync ──────────────────────────────────────────────────────────────────
     def do_sync(self, arg):
-        """Sync your local folder with Obsideo. Usage: sync push|pull|status"""
+        """Sync your local folder with Obsideo. Usage: sync push|pull [--raw]|status
+
+        sync pull skips (and reports) any file this key cannot decrypt rather
+        than saving its ciphertext; --raw saves stored bytes undecrypted."""
         if not self._require_login():
             return
         from obsideo import sync as sync_mod
-        sub = arg.strip().lower()
+        words = arg.strip().lower().split()
+        raw = "--raw" in words
+        words = [w for w in words if w != "--raw"]
+        sub = words[0] if words else ""
         if sub == "push":
             n = sync_mod.push()
             print(f"  Done. {n} file(s) pushed.")
         elif sub == "pull":
-            n = sync_mod.pull()
+            failed: list = []
+            n = sync_mod.pull(raw=raw, failed=failed)
             print(f"  Done. {n} file(s) pulled.")
+            if failed:
+                print(f"  {len(failed)} file(s) could not be decrypted and were not saved: "
+                      f"{', '.join(failed)}", file=sys.stderr)
+                self.exit_code = 1
         elif sub == "status":
             s = sync_mod.sync_status()
             for f in s["to_push"]:
@@ -1051,7 +1087,7 @@ class ObsideoShell(cmd.Cmd):
             if not any(s.values()):
                 print("  Nothing to sync.")
         else:
-            print("Usage: sync push|pull|status")
+            print("Usage: sync push|pull [--raw]|status")
 
     # ── config ────────────────────────────────────────────────────────────────
     def do_config(self, arg):
@@ -1199,6 +1235,8 @@ def main():
     if argv:
         shell.onecmd(" ".join(argv))
         show_next_steps(argv[0])
+        if shell.exit_code:
+            sys.exit(shell.exit_code)
         return
 
     # Interactive session ("initialization"): offer an update if one's out.

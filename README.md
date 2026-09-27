@@ -48,7 +48,7 @@ obsideo:/trip/ get cat.jpg ./downloaded.jpg
 | `ls [path]` | List files and folders |
 | `cd <path>` / `pwd` | Move around / show location |
 | `put <local> [name]` | Encrypt + upload a file, or a whole folder (recursive). `--no-encrypt` to store as-is |
-| `get <remote> [local]` | Download + decrypt a file |
+| `get <remote> [local]` | Download + decrypt a file (either content format). `--raw` to save the stored bytes undecrypted |
 | `rm <remote>` | Delete a file |
 | `mkdir <name>` | Create a folder |
 | `info <remote>` | Show object metadata |
@@ -90,6 +90,15 @@ extension builds on the same core - build the core once, two front-ends.
 - **Encryption:** AES-256-GCM with one account data key held locally at
   `~/.obsideo/data.key`. Copy that key to another machine and everything is
   readable there; lose it and the data is unrecoverable by design. Back it up.
+- **Two content formats, one key:** `put` writes a file as a single AES-256-GCM
+  stream. The Obsideo Drive browser app writes large files in a chunked format
+  (`obsideo-chunked-v1`: 1 MiB-scale chunks, each sealed separately, parameters
+  in the object's metadata) because browsers cannot encrypt a stream
+  incrementally. `get` and `sync pull` read both and pick by the object's
+  metadata, decrypting chunked files with constant memory. A file your key
+  cannot open is never saved (the command says so and exits non-zero); `--raw`
+  saves the stored bytes deliberately, e.g. for a file uploaded with
+  `--no-encrypt`. Format spec: [docs/chunked_encryption_spec.md](docs/chunked_encryption_spec.md).
 - **Signing identity:** an Ed25519 key (`~/.obsideo/signing.key`) authorizes
   deletes (Principle 2 - the network can't delete your data without your
   signature). Generated locally; only the public half is ever sent.

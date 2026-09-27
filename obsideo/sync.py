@@ -8,7 +8,7 @@ the Obsideo storage seam.
 import sys
 from pathlib import Path
 
-from obsideo_core import config, crypto, storage
+from obsideo_core import config, crypto, fetch, storage
 from obsideo import manifest
 
 REMOTE_PREFIX = "sync/"
@@ -124,6 +124,7 @@ def push(verbose: bool = True) -> int:
             continue
 
         raw = f.read_bytes()
+        # TODO(chunked-format-v1): write obsideo_core.chunked here too when put switches.
         body = crypto.encrypt(raw) if do_encrypt else raw
         try:
             key = storage.put(_remote_key(f.name), body)
@@ -138,7 +139,13 @@ def push(verbose: bool = True) -> int:
     return pushed
 
 
-def pull(verbose: bool = True) -> int:
+def pull(verbose: bool = True, *, raw: bool = False, failed: list | None = None) -> int:
+    """Download every remote file under the sync prefix into the sync folder.
+
+    Reads both content formats (see obsideo_core.fetch). A file this key cannot
+    decrypt is skipped and reported, never written: saving its ciphertext under
+    the real name used to look like a successful pull. Names of skipped files
+    are appended to `failed` when given. `raw=True` saves stored bytes as-is."""
     sync_dir = ensure_sync_dir()
 
     try:
@@ -152,22 +159,20 @@ def pull(verbose: bool = True) -> int:
         name = rf["name"]
         local_file = sync_dir / name
         try:
-            blob = storage.get(rf["key"])
-            try:
-                raw = crypto.decrypt(blob)
-                encrypted = True
-            except Exception:
-                raw = blob  # was stored unencrypted
-                encrypted = False
-            local_file.parent.mkdir(parents=True, exist_ok=True)
-            local_file.write_bytes(raw)
+            result = fetch.restore(rf["key"], local_file, raw=raw, name=name)
             manifest.upsert(name, remote_key=rf["key"],
                             local_hash=manifest.file_sha256(local_file),
-                            size=len(raw), encrypted=encrypted)
+                            size=result["size"], encrypted=result["encrypted"])
             pulled += 1
             if verbose:
                 print(f"  {name} - downloaded")
+        except fetch.RestoreError as e:
+            if failed is not None:
+                failed.append(name)
+            print(f"  {name} - NOT SAVED: {e}", file=sys.stderr)
         except Exception as e:
+            if failed is not None:
+                failed.append(name)
             print(f"  {name} - FAILED: {e}", file=sys.stderr)
 
     return pulled

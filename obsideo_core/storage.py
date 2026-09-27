@@ -237,6 +237,30 @@ def get(key: str) -> bytes:
         raise RuntimeError(f"Download failed for '{key}': {e}") from e
 
 
+def open_object(key: str):
+    """Open an object for streaming. Returns (body, metadata, size): `body` has
+    .read(n) and should be closed by the caller; `metadata` is the object's
+    user metadata (`x-amz-meta-` stripped; botocore keeps the header's case, and
+    Go canonicalizes it, so expect "Enc" as readily as "enc": match keys
+    case-insensitively, as chunked.params_from_metadata does); `size` is the
+    stored byte count from Content-Length, or None if the response lacked it.
+
+    The metadata is the coordinator's per-object `metadata` map: the gateway
+    re-emits it as x-amz-meta-* on GET and HEAD (s3-gateway gateway/download.go,
+    setUserMetadata; live since 2026-09-20). It carries the parameters of the
+    chunked content format (see chunked.py), so this one request tells the
+    caller both how to decrypt and gives it the bytes to decrypt."""
+    from botocore.exceptions import ClientError
+    try:
+        resp = _s3().get_object(Bucket=bucket(), Key=_skey(key))
+    except ClientError as e:
+        code = e.response.get("Error", {}).get("Code", "")
+        if code in ("NoSuchKey", "404", "NoSuchBucket"):
+            raise FileNotFoundError(f"Not found: {key}") from e
+        raise RuntimeError(f"Download failed for '{key}': {e}") from e
+    return resp["Body"], dict(resp.get("Metadata") or {}), resp.get("ContentLength")
+
+
 def download_file(key: str, local_path: Path) -> None:
     data = get(key)
     local_path.parent.mkdir(parents=True, exist_ok=True)

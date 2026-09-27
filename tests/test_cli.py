@@ -1,6 +1,7 @@
 """CLI shell test: put -> ls -> get -> rm round-trip against in-memory storage,
 with real client-side encryption in the path."""
 
+import io
 import os
 from pathlib import Path
 from unittest import mock
@@ -19,10 +20,17 @@ class FakeStore:
     """In-memory object store standing in for the Obsideo gateway."""
     def __init__(self):
         self.objs = {}
+        self.meta = {}  # key -> user metadata, as the gateway returns it
 
     def put(self, key, data):
         self.objs[key] = data
+        self.meta.pop(key, None)
         return key
+
+    def open_object(self, key):
+        if key not in self.objs:
+            raise FileNotFoundError(key)
+        return io.BytesIO(self.objs[key]), dict(self.meta.get(key, {})), len(self.objs[key])
 
     def get(self, key):
         if key not in self.objs:
@@ -54,6 +62,7 @@ def shell(monkeypatch, tmp_path):
     fake = FakeStore()
     monkeypatch.setattr(storage, "put", fake.put)
     monkeypatch.setattr(storage, "get", fake.get)
+    monkeypatch.setattr(storage, "open_object", fake.open_object)
     monkeypatch.setattr(storage, "delete", fake.delete)
     monkeypatch.setattr(storage, "list_prefix", fake.list_prefix)
     monkeypatch.setattr(storage, "head", fake.head)
@@ -523,3 +532,184 @@ def test_login_stays_quiet_for_a_genuinely_new_account(monkeypatch, capsys, tmp_
     cli.run_login(email="x@example.com", code="123456")
     out = capsys.readouterr().out
     assert "already holds" not in out
+
+
+# ── get / sync pull: both content formats, and no silent ciphertext ─────────
+
+def _store_chunked(fake, key, plaintext, nonce=bytes.fromhex("0000000000000001")):
+    from obsideo_core import chunked
+    it, total = chunked.encrypt_chunked(crypto.data_key(), plaintext, nonce)
+    fake.objs[key] = b"".join(it)
+    fake.meta[key] = chunked.metadata_for(nonce, total)
+
+
+def test_get_reads_the_chunked_format(shell, capsys):
+    from obsideo_core.chunked import P
+    sh, fake, tmp = shell
+    data = os.urandom(P + 777)
+    _store_chunked(fake, "video.bin", data)
+    out = tmp / "video.bin"
+    sh.do_get(f"video.bin {out}")
+    assert out.read_bytes() == data
+    assert sh.exit_code == 0
+    assert list(tmp.glob("*.obsideo-partial")) == []
+
+
+def test_get_still_reads_single_stream(shell):
+    sh, fake, tmp = shell
+    fake.objs["old.txt"] = crypto.encrypt(b"legacy bytes")
+    out = tmp / "old.txt"
+    sh.do_get(f"old.txt {out}")
+    assert out.read_bytes() == b"legacy bytes"
+
+
+def test_get_wrong_key_writes_nothing_and_fails(shell, capsys):
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    sh, fake, tmp = shell
+    nonce = os.urandom(12)
+    fake.objs["theirs.txt"] = nonce + AESGCM(os.urandom(32)).encrypt(nonce, b"not yours", None)
+    out = tmp / "theirs.txt"
+    sh.do_get(f"theirs.txt {out}")
+    err = capsys.readouterr().err
+    assert not out.exists()
+    assert list(tmp.iterdir()) == []
+    assert sh.exit_code == 1
+    assert ("Could not decrypt theirs.txt: this key does not open it "
+            "(stored with different 12 words or a different data key).") in err
+
+
+def test_get_chunked_wrong_key_writes_nothing(shell, capsys, monkeypatch):
+    sh, fake, tmp = shell
+    _store_chunked(fake, "c.bin", b"x" * 5000)
+    monkeypatch.setenv("OBSIDEO_DATA_KEY", os.urandom(32).hex())
+    out = tmp / "c.bin"
+    sh.do_get(f"c.bin {out}")
+    assert not out.exists() and list(tmp.iterdir()) == []
+    assert sh.exit_code == 1
+    assert "this key does not open it" in capsys.readouterr().err
+
+
+def test_get_damaged_later_chunk_leaves_no_partial_file(shell, capsys):
+    from obsideo_core.chunked import P, STRIDE
+    sh, fake, tmp = shell
+    _store_chunked(fake, "big.bin", os.urandom(2 * P + 3))
+    blob = bytearray(fake.objs["big.bin"])
+    blob[STRIDE + 10] ^= 0xFF  # inside chunk 1: chunk 0 decrypts and is written first
+    fake.objs["big.bin"] = bytes(blob)
+    out = tmp / "big.bin"
+    sh.do_get(f"big.bin {out}")
+    assert not out.exists() and list(tmp.iterdir()) == []
+    assert sh.exit_code == 1
+    assert "chunk 1 failed authentication" in capsys.readouterr().err
+
+
+def test_get_unknown_format_refused(shell, capsys):
+    sh, fake, tmp = shell
+    fake.objs["future.bin"] = b"\x00" * 64
+    fake.meta["future.bin"] = {"enc": "obsideo-chunked-v9", "nonce": "00" * 8, "chunks": "1"}
+    out = tmp / "future.bin"
+    sh.do_get(f"future.bin {out}")
+    assert not out.exists()
+    assert sh.exit_code == 1
+    assert "unknown encryption format obsideo-chunked-v9; upgrade obsideo-cli" in capsys.readouterr().err
+
+
+def test_get_raw_saves_stored_bytes_deliberately(shell, capsys):
+    sh, fake, tmp = shell
+    fake.objs["plain.txt"] = b"uploaded with --no-encrypt"
+    out = tmp / "plain.txt"
+    sh.do_get(f"plain.txt {out}")
+    assert not out.exists() and sh.exit_code == 1
+    sh.exit_code = 0
+    sh.do_get(f"plain.txt {out} --raw")
+    assert out.read_bytes() == b"uploaded with --no-encrypt"
+    assert sh.exit_code == 0
+    assert "not decrypted" in capsys.readouterr().out
+
+
+def test_one_shot_get_failure_exits_non_zero(shell, monkeypatch):
+    sh, fake, tmp = shell
+    fake.objs["nope.txt"] = b"not ciphertext at all"
+    monkeypatch.setattr(cli.sys, "argv", ["obsideo", "get", "nope.txt", str(tmp / "nope.txt")])
+    with pytest.raises(SystemExit) as e:
+        cli.main()
+    assert e.value.code == 1
+    assert not (tmp / "nope.txt").exists()
+
+
+def test_sync_pull_skips_undecryptable_and_reads_chunked(shell, monkeypatch, capsys):
+    from obsideo import sync, manifest
+    sh, fake, tmp = shell
+    sd = tmp / "obsideo-sync"
+    monkeypatch.setattr(sync, "_sync_dir", lambda: sd)
+    monkeypatch.setattr(manifest, "upsert", lambda *a, **k: None)
+    fake.objs["sync/good.txt"] = crypto.encrypt(b"good")
+    _store_chunked(fake, "sync/chunky.bin", b"chunky" * 1000)
+    fake.objs["sync/bad.txt"] = b"not decryptable"
+    failed = []
+    n = sync.pull(verbose=True, failed=failed)
+    assert n == 2 and failed == ["bad.txt"]
+    assert (sd / "good.txt").read_bytes() == b"good"
+    assert (sd / "chunky.bin").read_bytes() == b"chunky" * 1000
+    assert not (sd / "bad.txt").exists()
+    assert "Could not decrypt bad.txt" in capsys.readouterr().err
+
+    failed = []
+    assert sync.pull(verbose=False, raw=True, failed=failed) == 3 and failed == []
+    assert (sd / "bad.txt").read_bytes() == b"not decryptable"
+
+
+def test_sync_pull_failure_sets_exit_code(shell, monkeypatch):
+    from obsideo import sync, manifest
+    sh, fake, tmp = shell
+    monkeypatch.setattr(sync, "_sync_dir", lambda: tmp / "s")
+    monkeypatch.setattr(manifest, "upsert", lambda *a, **k: None)
+    fake.objs["sync/bad.txt"] = b"not decryptable"
+    sh.do_sync("pull")
+    assert sh.exit_code == 1
+
+
+def test_real_boto3_path_reads_gateway_metadata_headers(monkeypatch, tmp_path):
+    """End to end through the real storage seam and botocore's response parser,
+    against a local stand-in for the gateway that answers GET the way the Go
+    gateway does: x-amz-meta-* headers in Go's canonical case (X-Amz-Meta-Enc),
+    which botocore passes through with that case preserved."""
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from obsideo_core import chunked, fetch
+
+    nonce = bytes.fromhex("0000000000000001")
+    plaintext = bytes(k % 256 for k in range(chunked.P + 4321))
+    it, total = chunked.encrypt_chunked(crypto.data_key(), plaintext, nonce)
+    body = b"".join(it)
+
+    class Gateway(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("X-Amz-Meta-Enc", "obsideo-chunked-v1")
+            self.send_header("X-Amz-Meta-Nonce", nonce.hex())
+            self.send_header("X-Amz-Meta-Chunks", str(total))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *a):
+            pass
+
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), Gateway)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        monkeypatch.setenv("OBSIDEO_S3_ENDPOINT", f"http://127.0.0.1:{srv.server_address[1]}")
+        storage.reset_client()
+        _, meta, size = storage.open_object("clip.mp4")
+        assert {k.lower() for k in meta} == {"enc", "nonce", "chunks"}
+        assert chunked.params_from_metadata(meta) == (nonce, total)
+        assert size == len(body)
+        out = tmp_path / "clip.mp4"
+        result = fetch.restore("clip.mp4", out)
+        assert result["format"] == "obsideo-chunked-v1"
+        assert out.read_bytes() == plaintext
+    finally:
+        srv.shutdown()
+        storage.reset_client()
