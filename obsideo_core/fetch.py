@@ -1,9 +1,10 @@
 """Download one object and write its plaintext to disk: the single restore path
 shared by `get` and `sync pull`.
 
-Two content formats exist and the object's metadata says which one it is:
+Three content formats exist and the object's metadata says which one it is:
   * no metadata["enc"]              -> legacy single stream (crypto.decrypt)
-  * enc == "obsideo-chunked-v1"     -> chunked (chunked.decrypt_chunked, streamed)
+  * enc == "obsideo-object-v1"      -> self-describing (objectv1.decrypt, streamed)
+  * enc == "obsideo-chunked-v1"     -> older chunked (chunked.decrypt_chunked, streamed)
   * any other enc                   -> refused; never guessed
 
 A file that does not decrypt is never written. The old behaviour (save the
@@ -16,7 +17,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from obsideo_core import chunked, crypto, storage
+from obsideo_core import chunked, crypto, objectv1, storage
 
 _COPY_PIECE = 1024 * 1024
 
@@ -50,15 +51,20 @@ def restore(remote_key: str, local: Path, *, raw: bool = False,
     tmp = _partial_path(local)
     try:
         params = None
+        v1 = False
         if raw:
             fmt = "raw"
             encrypted = False
         else:
-            try:
-                params = chunked.params_from_metadata(meta)
-            except (chunked.UnknownFormatError, chunked.ChunkedFormatError) as e:
-                raise RestoreError(f"Could not decrypt {name}: {e}") from None
-            fmt = chunked.FORMAT if params else "single-stream"
+            if objectv1.enc_from_metadata(meta) == objectv1.FORMAT:
+                v1 = True
+                fmt = objectv1.FORMAT
+            else:
+                try:
+                    params = chunked.params_from_metadata(meta)
+                except (chunked.UnknownFormatError, chunked.ChunkedFormatError) as e:
+                    raise RestoreError(f"Could not decrypt {name}: {e}") from None
+                fmt = chunked.FORMAT if params else "single-stream"
             encrypted = True
             key = crypto.data_key()
 
@@ -72,6 +78,20 @@ def restore(remote_key: str, local: Path, *, raw: bool = False,
                         break
                     out.write(piece)
                     size += len(piece)
+            elif v1:
+                try:
+                    for piece in objectv1.decrypt(key, body, stored_size):
+                        out.write(piece)
+                        size += len(piece)
+                except objectv1.AuthError as e:
+                    if e.index == 0:
+                        raise RestoreError(_key_message(name)) from None
+                    raise RestoreError(
+                        f"Could not decrypt {name}: chunk {e.index} failed authentication, "
+                        "so the stored object is damaged.") from None
+                except objectv1.FormatError as e:
+                    raise RestoreError(
+                        f"Could not decrypt {name}: the stored object is damaged or incomplete ({e}).") from None
             elif params:
                 file_nonce, total = params
                 try:

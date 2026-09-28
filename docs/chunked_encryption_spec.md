@@ -1,3 +1,11 @@
+> **Superseded 2026-09-29 by [`obsideo-object-v1`](object_format_v1.md).** No client
+> writes this format any more. It is kept so every client can still *read* the
+> objects Drive wrote between 2026-09-28 03:10Z and the switch; Drive re-keys
+> them into the new format in the background. The reason it was replaced: the
+> nonce and chunk count lived only in the coordinator's metadata, so a stored
+> object could not be opened without the coordinator, which breaks sovereign
+> recovery (design principle 2).
+
 # Chunked content encryption (`obsideo-chunked-v1`) — format spec
 
 So every Obsideo client (the browser app, the CLI, the SDK) writes and reads large

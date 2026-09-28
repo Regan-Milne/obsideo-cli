@@ -22,9 +22,12 @@ class FakeStore:
         self.objs = {}
         self.meta = {}  # key -> user metadata, as the gateway returns it
 
-    def put(self, key, data):
+    def put(self, key, data, metadata=None):
         self.objs[key] = data
-        self.meta.pop(key, None)
+        if metadata:
+            self.meta[key] = dict(metadata)
+        else:
+            self.meta.pop(key, None)
         return key
 
     def open_object(self, key):

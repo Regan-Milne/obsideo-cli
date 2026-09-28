@@ -18,7 +18,7 @@ import urllib.request
 import json
 from pathlib import Path
 
-from obsideo_core import config, crypto, fetch, identity, login, storage
+from obsideo_core import config, crypto, fetch, identity, login, objectv1, storage
 
 
 def _unquote(s: str) -> str:
@@ -265,6 +265,54 @@ def check_for_update() -> None:
 
 
 # ── Operator tooling: broadcast a message to all users ────────────────────────
+
+RECOVER_USAGE = """Usage: obsideo recover <stored-object-file> <output-file> [--key <64 hex> | --phrase "<12 words>"]
+
+Turns a raw stored object (the bytes a storage provider holds for one of your
+files) back into the file, offline: no coordinator, no gateway, no login.
+Without --key or --phrase the data key on this machine is used. Reads
+obsideo-object-v1 and the CLI's single-stream format; nothing is written
+unless every byte authenticates."""
+
+
+def run_recover(argv: list) -> int:
+    from obsideo_core import recover as rec
+    args, key_hex, phrase = [], None, None
+    it = iter(argv)
+    for a in it:
+        if a in ("-h", "--help", "help"):
+            print(RECOVER_USAGE)
+            return 0
+        if a == "--key":
+            key_hex = next(it, None)
+        elif a.startswith("--key="):
+            key_hex = a.split("=", 1)[1]
+        elif a == "--phrase":
+            phrase = next(it, None)
+        elif a.startswith("--phrase="):
+            phrase = a.split("=", 1)[1]
+        else:
+            args.append(a)
+    if len(args) != 2 or (key_hex is not None and phrase is not None):
+        print(RECOVER_USAGE)
+        return 2
+    try:
+        if key_hex is not None:
+            key = rec.data_key_from_hex(key_hex)
+        elif phrase is not None:
+            key = rec.data_key_from_phrase(phrase)
+        elif crypto.has_data_key():
+            key = crypto.data_key()
+        else:
+            print("No data key on this machine: pass --phrase or --key.")
+            return 2
+        r = rec.recover(Path(args[0]).expanduser(), Path(args[1]).expanduser(), key)
+    except rec.RecoverError as e:
+        print(f"Could not recover: {e}")
+        return 1
+    print(f"Recovered {args[1]} ({_human(r['size'])}, {r['format']}).")
+    return 0
+
 
 def run_admin(argv: list) -> int:
     """`obsideo admin broadcast [--severity info|action|urgent] [--ttl SECONDS] "message"`
@@ -696,15 +744,22 @@ class ObsideoShell(cmd.Cmd):
         except OSError as e:
             print(f"  Error reading {local}: {e}")
             return
-        # TODO(chunked-format-v1): switch writes to obsideo_core.chunked
-        # (encrypt_chunked + metadata_for, sent as x-amz-meta-*) once the
-        # streaming-put branch lands, so CLI and browser write one format. Reads
-        # of both formats already work (see fetch.restore).
-        body = crypto.encrypt(raw) if do_encrypt else raw
+        # Encrypted files are written as obsideo-object-v1 (objectv1.py): the
+        # same self-describing format Drive writes, so either client reads the
+        # other's files and a raw provider blob plus the phrase is enough to
+        # recover one (`recover`). The whole file is still held in memory here;
+        # a streaming put is separate work.
+        metadata = None
+        if do_encrypt:
+            pieces, _ = objectv1.encrypt(crypto.data_key(), raw)
+            body = b"".join(pieces)
+            metadata = objectv1.metadata_for()
+        else:
+            body = raw
         verb = "Encrypting + uploading" if do_encrypt else "Uploading"
         print(f"  {verb} {key.rsplit('/', 1)[-1]} ({_human(len(raw))})...")
         try:
-            storage.put(key, body)
+            storage.put(key, body, metadata)
             print(f"  Stored: /{key}")
         except Exception as e:
             print(f"  Error: {e}")
@@ -734,9 +789,10 @@ class ObsideoShell(cmd.Cmd):
     def do_get(self, arg):
         """Download and decrypt a file.
 
-        Reads both content formats: the CLI's single-stream AES-256-GCM and the
-        browser app's chunked format (obsideo-chunked-v1), chosen by the
-        object's metadata. A file this key cannot decrypt is NOT saved.
+        Reads every content format: obsideo-object-v1 (what put and Drive
+        write now), the CLI's older single-stream AES-256-GCM, and Drive's
+        interim obsideo-chunked-v1, chosen by the object's metadata. A file
+        this key cannot decrypt is NOT saved.
 
         Usage:
           get <remote_file> [local_path] [--raw]
@@ -1224,6 +1280,10 @@ def main():
     # `obsideo admin ...` is operator tooling, not a shell command.
     if argv and argv[0] == "admin":
         sys.exit(run_admin(argv[1:]))
+
+    # `obsideo recover ...` is offline: no login, no network.
+    if argv and argv[0] == "recover":
+        sys.exit(run_recover(argv[1:]))
 
     # Surface any pending operator broadcasts (no-op unless interactive).
     show_notices()

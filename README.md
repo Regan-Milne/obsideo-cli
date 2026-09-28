@@ -48,7 +48,8 @@ obsideo:/trip/ get cat.jpg ./downloaded.jpg
 | `ls [path]` | List files and folders |
 | `cd <path>` / `pwd` | Move around / show location |
 | `put <local> [name]` | Encrypt + upload a file, or a whole folder (recursive). `--no-encrypt` to store as-is |
-| `get <remote> [local]` | Download + decrypt a file (either content format). `--raw` to save the stored bytes undecrypted |
+| `get <remote> [local]` | Download + decrypt a file (any content format). `--raw` to save the stored bytes undecrypted |
+| `recover <stored> <out> [--phrase "..."]` | Offline: a raw stored object + your key -> the file. No coordinator, no login |
 | `rm <remote>` | Delete a file |
 | `mkdir <name>` | Create a folder |
 | `info <remote>` | Show object metadata |
@@ -90,15 +91,15 @@ extension builds on the same core - build the core once, two front-ends.
 - **Encryption:** AES-256-GCM with one account data key held locally at
   `~/.obsideo/data.key`. Copy that key to another machine and everything is
   readable there; lose it and the data is unrecoverable by design. Back it up.
-- **Two content formats, one key:** `put` writes a file as a single AES-256-GCM
-  stream. The Obsideo Drive browser app writes large files in a chunked format
-  (`obsideo-chunked-v1`: 1 MiB chunks, each sealed separately, parameters
-  in the object's metadata) because browsers cannot encrypt a stream
-  incrementally. `get` and `sync pull` read both and pick by the object's
-  metadata, decrypting chunked files with constant memory. A file your key
-  cannot open is never saved (the command says so and exits non-zero); `--raw`
-  saves the stored bytes deliberately, e.g. for a file uploaded with
-  `--no-encrypt`. Format spec: [docs/chunked_encryption_spec.md](docs/chunked_encryption_spec.md).
+- **One content format, one key per file:** `put` and Drive both write
+  `obsideo-object-v1`: a 48-byte header (nonce, key salt, chunk count) followed
+  by 1 MiB chunks, each sealed with AES-256-GCM under a per-file key derived
+  one-way from your account key. Everything needed to open a file is in the
+  file, so a raw copy from any storage node plus your 12 words is enough
+  (`obsideo recover`). Older files stay readable: the CLI's single-stream
+  format and Drive's interim `obsideo-chunked-v1`. A file your key cannot
+  decrypt is never written to disk. Format spec:
+  [docs/object_format_v1.md](docs/object_format_v1.md).
 - **Signing identity:** an Ed25519 key (`~/.obsideo/signing.key`) authorizes
   deletes (Principle 2 - the network can't delete your data without your
   signature). Generated locally; only the public half is ever sent.

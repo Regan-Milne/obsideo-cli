@@ -191,8 +191,11 @@ def ensure_bucket() -> None:
 
 # ── Object ops ──────────────────────────────────────────────────────────────
 
-def put(key: str, data: bytes) -> str:
-    """Upload bytes to key. Returns the key."""
+def put(key: str, data: bytes, metadata: dict | None = None) -> str:
+    """Upload bytes to key. Returns the key. `metadata` becomes the object's
+    user metadata (x-amz-meta-*), which the gateway stores in the coordinator's
+    per-object map and re-emits on GET/HEAD; the content-format tag lives
+    there (objectv1.metadata_for)."""
     import io
     from boto3.s3.transfer import TransferConfig
 
@@ -201,7 +204,9 @@ def put(key: str, data: bytes) -> str:
         ensure_bucket()
         transfer = TransferConfig(multipart_threshold=_MULTIPART_CHUNK,
                                   multipart_chunksize=_MULTIPART_CHUNK)
-        s3.upload_fileobj(io.BytesIO(data), bucket(), _skey(key), Config=transfer)
+        extra = {"Metadata": dict(metadata)} if metadata else None
+        s3.upload_fileobj(io.BytesIO(data), bucket(), _skey(key), Config=transfer,
+                          ExtraArgs=extra)
         return key
 
     # Wraps ensure_bucket too: on a fresh account the bucket lookup is the first
