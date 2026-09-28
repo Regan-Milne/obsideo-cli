@@ -92,7 +92,7 @@ extension builds on the same core - build the core once, two front-ends.
   readable there; lose it and the data is unrecoverable by design. Back it up.
 - **Two content formats, one key:** `put` writes a file as a single AES-256-GCM
   stream. The Obsideo Drive browser app writes large files in a chunked format
-  (`obsideo-chunked-v1`: 1 MiB-scale chunks, each sealed separately, parameters
+  (`obsideo-chunked-v1`: 1 MiB chunks, each sealed separately, parameters
   in the object's metadata) because browsers cannot encrypt a stream
   incrementally. `get` and `sync pull` read both and pick by the object's
   metadata, decrypting chunked files with constant memory. A file your key

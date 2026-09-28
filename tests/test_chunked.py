@@ -31,8 +31,8 @@ def _decrypt(ct, total, key=KEY, nonce=NONCE, size=None) -> bytes:
 
 
 def test_constants():
-    assert P == 1048548
-    assert STRIDE == P + TAG_LEN
+    assert P == 1048560
+    assert STRIDE == P + TAG_LEN == 1048576  # stored chunks align with 1 MiB merkle chunks
 
 
 @pytest.mark.parametrize("size", [0, 1, 1000, P - 1, P, P + 1, 2 * 1048576 + 12345])
@@ -44,7 +44,15 @@ def test_round_trip(size):
     assert TAG_LEN <= len(chunks[-1]) <= STRIDE
     ct = b"".join(chunks)
     assert chunked.plaintext_size(len(ct), total) == size
+    assert (total - 1) * P + (len(chunks[-1]) - TAG_LEN) == size
     assert _decrypt(io.BytesIO(ct), total) == pt
+
+
+def test_empty_file_is_one_bare_tag_chunk():
+    chunks, total = _encrypt(b"")
+    assert total == 1 and len(chunks) == 1 and len(chunks[0]) == TAG_LEN
+    assert chunked.metadata_for(NONCE, total)["chunks"] == "1"
+    assert _decrypt(io.BytesIO(chunks[0]), 1) == b""
 
 
 def test_boundary_chunk_counts():
@@ -265,15 +273,15 @@ def test_cross_client_vector():
     chunks, total = _encrypt(pt, key=key, nonce=file_nonce)
     ct = b"".join(chunks)
     assert total == 3
-    assert [len(c) for c in chunks] == [1048564, 1048564, 12417]
+    assert [len(c) for c in chunks] == [1048576, 1048576, 12393]
     assert len(ct) == 2109545
     assert hashlib.sha256(ct).hexdigest() == \
-        "e2bc7e26da4ac7b934a9865eb86e06acd8b3d8edc1aa77bfb730e64975786ca8"
+        "5c394de4fcfb785410d7ec7909c6119cace800e130cba938029983f94f496ad4"
     assert hashlib.sha256(chunks[0]).hexdigest() == \
-        "22525a9e2536817b4402a3ad839799ca55ed70a6e060262414a56ae7687cb621"
+        "d32faa972573ff89c2e0250d9fa9ca65396cc61d28f464fcbebfc75ada88aeae"
     assert _merkle_root(ct) == (
-        "5f066a87bcc02e42e1b92ad517fef5928c4b1bf2968ebed4a80a535222f5f961"
-        "5e698e3b4bef2ea895ba7c6c104b7fe990902a8ea8dd04811d7ebb28c381a9de")
+        "358f99ff00d692d7e0c8e85d43345576cf7b8a27a5ddd22ef37aed9fac7fd6cd"
+        "221fb04015fff13e0d7e03f669cf0be30f4a6ae518f683e7828f4c62a55481c9")
     assert chunked.metadata_for(file_nonce, total) == \
         {"enc": "obsideo-chunked-v1", "nonce": "0000000000000001", "chunks": "3"}
     assert _decrypt(io.BytesIO(ct), total, key=key, nonce=file_nonce) == pt

@@ -7,12 +7,15 @@ format. The public spec is docs/chunked_encryption_spec.md; keep the two in
 step.
 
     key          = the account data key (32 bytes)
-    P            = 1048548 plaintext bytes per chunk (last one shorter)
+    P            = 1048560 plaintext bytes per chunk (last one shorter)
     file_nonce   = 8 random bytes per upload
     nonce_i      = file_nonce || BE32(i)                          (12 bytes)
     AAD_i        = b"obsideo-chunked-v1" || BE32(i) || BE32(total_chunks)
     chunk_i      = AES-256-GCM(key, nonce_i, plaintext_i, AAD_i)  = ct_i || tag_i(16)
     object bytes = chunk_0 || chunk_1 || ... (no header)
+
+Every stored chunk but the last is P + 16 = 1 MiB exactly, so ciphertext chunk
+i is the network's merkle chunk i. The nonce is derived, never stored.
 
 The per-file parameters travel out of band, in the object's metadata map:
     {"enc": "obsideo-chunked-v1", "nonce": "<16 lowercase hex>", "chunks": "<decimal>"}
@@ -32,9 +35,9 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 FORMAT = "obsideo-chunked-v1"
 _FORMAT_BYTES = FORMAT.encode("ascii")
 
-P = 1048576 - 28          # plaintext bytes per chunk = 1048548
+P = 1048576 - 16          # plaintext bytes per chunk = 1048560
 TAG_LEN = 16              # AES-GCM tag, appended to each chunk's ciphertext
-STRIDE = P + TAG_LEN      # stored bytes per full ciphertext chunk = ct_i || tag_i
+STRIDE = P + TAG_LEN      # stored bytes per full chunk = ct_i || tag_i = 1 MiB
 FILE_NONCE_LEN = 8
 MAX_CHUNKS = 2**32 - 1    # the chunk index and count are BE32
 
@@ -95,7 +98,9 @@ def check_ciphertext_size(ciphertext_size: int, total_chunks: int) -> None:
 
 
 def plaintext_size(ciphertext_size: int, total_chunks: int) -> int:
-    """Plaintext size from the stored object size: each chunk adds TAG_LEN."""
+    """Plaintext size from the stored object size:
+    (total_chunks - 1) * P + (len(last ct chunk) - 16), which is the same as
+    ciphertext_size - 16 * total_chunks since every chunk adds one tag."""
     return ciphertext_size - total_chunks * TAG_LEN
 
 

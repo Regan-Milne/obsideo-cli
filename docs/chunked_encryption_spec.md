@@ -14,10 +14,11 @@ independently encrypted chunks, so any client can stream it with constant memory
 
 ## Format
 - **Key:** the account data key (32 bytes).
-- Plaintext is cut into chunks of exactly `P = 1048576 - 28 = 1048548` bytes
+- Plaintext is cut into chunks of exactly `P = 1048576 - 16 = 1048560` bytes
   (last one shorter). Each plaintext chunk `i` is encrypted separately with
-  AES-256-GCM → `ct_i || tag_i(16)`. The object's bytes are the concatenation of
-  ciphertext chunks. **No header.**
+  AES-256-GCM → `ct_i || tag_i(16)`, so every ciphertext chunk except the last is
+  exactly 1 MiB (`P + 16 = 1048576`). The object's bytes are the concatenation of
+  ciphertext chunks. **No header**, and no per-chunk nonce: nonces are derived.
 - `file_nonce` = 8 random bytes per upload. `nonce_i (12 bytes) = file_nonce || BE32(i)`.
 - `AAD_i = b"obsideo-chunked-v1" + BE32(i) + BE32(total_chunks)`.
 - Parameters travel in the object's metadata:
@@ -31,11 +32,14 @@ to its position and to the file's chunk count, so chunks cannot be reordered,
 duplicated, or dropped from the end without a tag failing.
 
 ## Details the CLI implements
-- **Chunk count** = `ceil(size / P)`, and **1 for an empty file** (one chunk of
-  zero plaintext bytes, stored as a bare 16-byte tag), so every object, even an
-  empty one, is authenticated.
+- **Chunk count** = `ceil(size / P)` for a non-empty file.
+- **Empty file rule:** a zero-byte file is **1 chunk**: zero plaintext bytes,
+  stored as a bare 16-byte tag, with `"chunks": "1"`. Every object, even an empty
+  one, is authenticated, and the gateway never sees an empty body.
 - **Stored chunk size:** every ciphertext chunk except the last is `P + 16 =
-  1048564` bytes; the last is `16 ..= 1048564` bytes.
+  1048576` bytes (1 MiB); the last is 16 to 1048576 bytes. Ciphertext chunk `i`
+  is therefore exactly the network's 1 MiB merkle chunk `i`, so a ranged fetch
+  of one merkle chunk decrypts on its own.
 - **Plaintext size** = `(total_chunks - 1) * P + (len(last ciphertext chunk) - 16)`
   = `object size - 16 * total_chunks`.
 - **Readers must** verify each chunk's tag before releasing its plaintext, refuse
@@ -49,16 +53,6 @@ duplicated, or dropped from the end without a tag failing.
 - On the S3 interface the parameters appear as `x-amz-meta-enc`, `x-amz-meta-nonce`,
   `x-amz-meta-chunks` on GET and HEAD.
 
-> **Open point, to settle before either client ships.** The design note this spec
-> comes from also says "every ciphertext chunk except the last is exactly 1 MiB"
-> and "plaintext size = (total_chunks - 1) * P + (len(last ct chunk) - 28)". With
-> `ct_i || tag_i` and `P = 1048548`, a stored chunk is `P + 16 = 1048564` bytes,
-> not 1 MiB, so encryption chunks do not line up with the network's 1 MiB merkle
-> chunks. This document and the CLI follow the explicit construction (P and
-> `ct_i || tag_i`). Keeping 1 MiB alignment needs either `P = 1048576 - 16` with
-> `ct_i || tag_i`, or `P = 1048548` with each chunk stored as `nonce_i || ct_i || tag_i`.
-> The test vector below pins the current choice; changing it changes the vector.
-
 ## Test vector
 - Phrase: the BIP-39 English test phrase (`abandon` × 11, then `about`).
   `seed = PBKDF2-HMAC-SHA512(NFKD(phrase), "mnemonic", 2048, 64)`,
@@ -70,13 +64,14 @@ duplicated, or dropped from the end without a tag failing.
 | Output | Value |
 |---|---|
 | total_chunks | 3 |
-| stored chunk sizes | 1048564, 1048564, 12417 (object = 2109545 bytes) |
-| SHA-256(object) | `e2bc7e26da4ac7b934a9865eb86e06acd8b3d8edc1aa77bfb730e64975786ca8` |
-| SHA-256(chunk 0) | `22525a9e2536817b4402a3ad839799ca55ed70a6e060262414a56ae7687cb621` |
-| merkle root (network's 1 MiB chunks) | `5f066a87bcc02e42e1b92ad517fef5928c4b1bf2968ebed4a80a535222f5f9615e698e3b4bef2ea895ba7c6c104b7fe990902a8ea8dd04811d7ebb28c381a9de` |
+| stored chunk sizes | 1048576, 1048576, 12393 (object = 2109545 bytes) |
+| SHA-256(object) | `5c394de4fcfb785410d7ec7909c6119cace800e130cba938029983f94f496ad4` |
+| SHA-256(chunk 0) | `d32faa972573ff89c2e0250d9fa9ca65396cc61d28f464fcbebfc75ada88aeae` |
+| merkle root | `358f99ff00d692d7e0c8e85d43345576cf7b8a27a5ddd22ef37aed9fac7fd6cd221fb04015fff13e0d7e03f669cf0be30f4a6ae518f683e7828f4c62a55481c9` |
 | metadata | `{"enc": "obsideo-chunked-v1", "nonce": "0000000000000001", "chunks": "3"}` |
 
-The merkle root is the network's: the object split into 1 MiB chunks,
+The merkle root is the network's, over the object's 1 MiB chunks (which here are
+exactly the ciphertext chunks):
 `leaf_i = SHA3-512(SHA-256(ASCII(str(i)) || ASCII(lowercase hex of chunk i)))`,
 padded with 64-byte zero leaves to a power of two, `parent = SHA3-512(left || right)`,
 a single leaf being the root.
