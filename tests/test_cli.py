@@ -15,6 +15,14 @@ from obsideo import cli
 from obsideo_core import storage, crypto
 
 
+@pytest.fixture(autouse=True)
+def _fresh_token_flag(monkeypatch):
+    # cli._token_rejected is process-wide; any test whose code path reaches the
+    # real signup service with a fake token gets a genuine 401 and would set it
+    # for every test after it.
+    monkeypatch.setattr(cli, "_token_rejected", False)
+
+
 class FakeStore:
     """In-memory object store standing in for the Obsideo gateway."""
     def __init__(self):
@@ -523,3 +531,52 @@ def test_login_stays_quiet_for_a_genuinely_new_account(monkeypatch, capsys, tmp_
     cli.run_login(email="x@example.com", code="123456")
     out = capsys.readouterr().out
     assert "already holds" not in out
+
+
+# ── signup-service reads: a rejected token says what to do (2026-09-28) ─────
+# `refer` used to turn every failure into "try again shortly". A 401 means this
+# machine's account token was replaced (a later `login` for the same email
+# issues new credentials), so retrying can never work: 13 retries in ten
+# minutes were seen from our own desktop. Transient failures get one retry.
+
+class _Resp:
+    def __init__(self, body):
+        self._b = body
+    def read(self):
+        return self._b
+    def __enter__(self):
+        return self
+    def __exit__(self, *a):
+        return False
+
+
+def _http_error(code):
+    return cli.urllib.error.HTTPError("https://signup.obsideo.io/x", code, "err", {}, None)
+
+
+def test_refer_on_rejected_token_says_log_in_again(monkeypatch, capsys):
+    monkeypatch.setattr(cli.config, "account_token", lambda: "obt_old")
+    monkeypatch.setattr(cli.ObsideoShell, "_require_login", lambda self: True, raising=False)
+    calls = []
+    def urlopen(req, timeout=None, context=None):
+        calls.append(1)
+        raise _http_error(401)
+    monkeypatch.setattr(cli.urllib.request, "urlopen", urlopen)
+    cli.ObsideoShell().do_refer("")
+    out = capsys.readouterr().out
+    assert "login" in out and "try again shortly" not in out
+    assert len(calls) == 1, "a 401 must not be retried"
+
+
+def test_referral_retries_once_on_a_transient_failure(monkeypatch):
+    monkeypatch.setattr(cli.config, "account_token", lambda: "obt_ok")
+    monkeypatch.setattr(cli.time, "sleep", lambda s: None, raising=False)
+    attempts = []
+    def urlopen(req, timeout=None, context=None):
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise _http_error(502)
+        return _Resp(b'{"code": "ABC"}')
+    monkeypatch.setattr(cli.urllib.request, "urlopen", urlopen)
+    assert cli._fetch_referral() == {"code": "ABC"}
+    assert len(attempts) == 2

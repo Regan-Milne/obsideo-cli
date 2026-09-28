@@ -13,6 +13,7 @@ import os
 import shlex
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.request
 import json
@@ -847,6 +848,8 @@ class ObsideoShell(cmd.Cmd):
         # Referral summary (only for email-login accounts; pre-shim accounts have
         # no signup token and just don't show this line).
         ref = _fetch_referral() if config.account_token() else None
+        if not ref and _token_rejected:
+            print("     Referrals: this machine's login was replaced; run 'login' with the same email")
         if ref:
             if ref.get("active"):
                 print(f"     Referrals: code {ref['code']} - {ref['active']} active, "
@@ -999,7 +1002,10 @@ class ObsideoShell(cmd.Cmd):
             return
         info = _fetch_referral()
         if not info:
-            print("\n  Couldn't load your referral info just now - try again shortly.\n")
+            if _token_rejected:
+                print(f"\n  {LOGIN_AGAIN}\n")
+            else:
+                print("\n  Couldn't load your referral info just now - try again shortly.\n")
             return
 
         each = info.get("owner_bonus_gb_each", 2)
@@ -1089,19 +1095,51 @@ class ObsideoShell(cmd.Cmd):
         pass
 
 
-def _fetch_usage() -> dict | None:
+# Set when the signup service rejects this machine's account token (401). A
+# later `login` for the same email issues new credentials and retires the old
+# token, so this machine stays rejected until it logs in again; retrying can
+# never help. Callers use it to say so instead of "try again shortly".
+_token_rejected = False
+
+_TRANSIENT_STATUS = (499, 502, 503, 504)
+
+LOGIN_AGAIN = ("This machine's login was replaced: signing in again with the same email "
+               "(here or on another machine) issues new credentials. Run 'login' with "
+               "the same email to reconnect this machine to the same account.")
+
+
+def _signup_get(path: str, timeout: int) -> dict | None:
+    """GET a signup-service account endpoint with the account token. One retry
+    after 1.5 s on a network failure, a timeout or a proxy status; never on a
+    real answer. Returns None on any failure, and records a 401 in
+    _token_rejected."""
+    global _token_rejected
     token = config.account_token()
     if not token:
         return None
-    try:
-        req = urllib.request.Request(
-            f"{config.signup_url()}/v1/account/usage",
-            headers={"Authorization": f"Bearer {token}", "User-Agent": config.USER_AGENT},
-        )
-        with urllib.request.urlopen(req, timeout=15, context=config.ssl_context()) as resp:
-            return json.loads(resp.read().decode())
-    except Exception:
-        return None
+    req = urllib.request.Request(
+        f"{config.signup_url()}{path}",
+        headers={"Authorization": f"Bearer {token}", "User-Agent": config.USER_AGENT},
+    )
+    for attempt in (1, 2):
+        try:
+            with urllib.request.urlopen(req, timeout=timeout, context=config.ssl_context()) as resp:
+                return json.loads(resp.read().decode())
+        except urllib.error.HTTPError as e:
+            if e.code == 401:
+                _token_rejected = True
+                return None
+            if e.code not in _TRANSIENT_STATUS or attempt == 2:
+                return None
+        except Exception:
+            if attempt == 2:
+                return None
+        time.sleep(1.5)
+    return None
+
+
+def _fetch_usage() -> dict | None:
+    return _signup_get("/v1/account/usage", timeout=15)
 
 
 def _fetch_referral() -> dict | None:
@@ -1109,18 +1147,7 @@ def _fetch_referral() -> dict | None:
     triggers the server-side lazy credit check for any friend who just became
     active. Returns None for accounts without a signup token (e.g. pre-shim
     accounts) or if the service is unreachable — callers handle that gracefully."""
-    token = config.account_token()
-    if not token:
-        return None
-    try:
-        req = urllib.request.Request(
-            f"{config.signup_url()}/v1/account/referral",
-            headers={"Authorization": f"Bearer {token}", "User-Agent": config.USER_AGENT},
-        )
-        with urllib.request.urlopen(req, timeout=20, context=config.ssl_context()) as resp:
-            return json.loads(resp.read().decode())
-    except Exception:
-        return None
+    return _signup_get("/v1/account/referral", timeout=20)
 
 
 def _fetch_account_info() -> dict | None:
