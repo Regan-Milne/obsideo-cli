@@ -28,6 +28,16 @@ _MULTIPART_CHUNK = 16 * 1024 * 1024  # 16 MiB
 # non-empty placeholder object rather than a zero-byte key.
 _FOLDER_MARKER = ".keep"
 
+# Windows only: the socket send buffer for upload connections. With the OS
+# default, one connection from a Windows desktop to s3.obsideo.io (62 ms RTT)
+# moved 3.3 MB/s however fast the line was; 1 MiB gave 25-30 MB/s and 4 MiB
+# 25-33 MB/s on the same part (measured 2026-10-17). 4 MiB keeps a far-away
+# uploader (150 ms+) off the same ceiling. Not set elsewhere: on Linux a fixed
+# SO_SNDBUF switches off the kernel's own tuning (and is capped by wmem_max),
+# which can make it slower. OBSIDEO_SEND_BUFFER=<bytes> overrides; 0 leaves
+# the OS default.
+_SEND_BUFFER_WINDOWS = 4 * 1024 * 1024
+
 
 def _names_on() -> bool:
     return config.load_config().get("encrypt_names", True)
@@ -100,7 +110,43 @@ def _s3():
 
     _client = boto3.client("s3", endpoint_url=_endpoint(),
                            aws_access_key_id=ak, aws_secret_access_key=sk, config=cfg)
+    _widen_send_buffer(_client)
     return _client
+
+
+def _send_buffer() -> int:
+    env = os.environ.get("OBSIDEO_SEND_BUFFER", "").strip()
+    if env:
+        try:
+            return max(0, int(env))
+        except ValueError:
+            pass
+    return _SEND_BUFFER_WINDOWS if os.name == "nt" else 0
+
+
+def _widen_send_buffer(client) -> None:
+    """Give the client's connections a larger SO_SNDBUF (see _SEND_BUFFER_WINDOWS).
+
+    botocore has no public setting for socket options, so this adds one to the
+    options its connection pool already uses (TCP_NODELAY, keepalive). Done
+    before the first request, so every connection gets it. If botocore's
+    internals ever move, this does nothing and uploads run at the old speed;
+    it never fails a call.
+    """
+    size = _send_buffer()
+    if not size:
+        return
+    import socket
+    try:
+        sess = client._endpoint.http_session
+        opts = [o for o in (sess._socket_options or []) if o[:2] != (socket.SOL_SOCKET, socket.SO_SNDBUF)]
+        opts.append((socket.SOL_SOCKET, socket.SO_SNDBUF, size))
+        sess._socket_options = opts
+        managers = [sess._manager, *getattr(sess, "_proxy_managers", {}).values()]
+        for m in managers:
+            m.connection_pool_kw["socket_options"] = opts
+    except Exception:
+        pass
 
 
 def reset_client() -> None:
