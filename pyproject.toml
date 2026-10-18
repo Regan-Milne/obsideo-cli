@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "obsideo-cli"
-version = "0.6.1"
+version = "0.6.1.post1"
 description = "Obsideo Cloud CLI - client-side encrypted storage for people and AI agents: content is encrypted on your machine before upload. 12 GB free, no card. Save, browse, and sync from your terminal; agent integration contract at obsideo.io/agents.md"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -14,7 +14,11 @@ keywords = [
     "end-to-end encryption", "object storage", "free tier", "cli", "sync",
 ]
 dependencies = [
-    "boto3>=1.28",
+    # botocore 1.42.43+ sends request bodies in 128 KB blocks; older ones use
+    # urllib3 2.x's 16 KB, which capped one Windows upload connection at
+    # ~3.3 MB/s (measured 2026-10-18). boto3 and botocore share version numbers.
+    "boto3>=1.42.43",
+    "botocore>=1.42.43",
     "cryptography>=41.0",
     "certifi",
 ]
