@@ -3,7 +3,7 @@
 Save, browse, and sync whatever you want - encrypted on your machine before it
 leaves, so Obsideo can't read it. An interactive shell plus one-shot commands.
 
-    obsideo login                 sign up / log in (email -> 12 GB free)
+    obsideo login                 sign up / log in (email -> 8 GB free)
     obsideo                       start the interactive shell
     obsideo ls / put / get ...    run a single command
 """
@@ -497,7 +497,8 @@ def run_login(url: str | None = None, *, email: str | None = None,
             "data_key_file": str(crypto.DATA_KEY_FILE),
         }, indent=2))
         return True
-    print(f"\nYou're all set. {creds.get('quota_gb', 12)} GB free.")
+    quota_gb = creds.get("quota_gb")
+    print(f"\nYou're all set. {quota_gb} GB free." if quota_gb is not None else "\nYou're all set.")
     if referral_code:
         if creds.get("referral_applied"):
             print(f"Referral applied - enjoy the extra space! (code {referral_code.upper()})")
@@ -588,7 +589,7 @@ class ObsideoShell(cmd.Cmd):
 
     # ── login ───────────────────────────────────────────────────────────────
     def do_login(self, arg):
-        """Sign up / log in with your email (email -> 12 GB free)."""
+        """Sign up / log in with your email (email -> 8 GB free)."""
         run_login()
         self._cwd = ""
         self._refresh_prompt()
@@ -922,7 +923,8 @@ class ObsideoShell(cmd.Cmd):
   it, then stored across three providers (RF=3). Obsideo's servers
   only ever see ciphertext - never your filenames, never your data.
 
-  - Free: 12 GB, no card, no expiry.
+  - Free: 8 GB, no card, no expiry; 16 GB after you answer eight questions in the
+    Drive web app.
   - Your keys live only on your machine (~/.obsideo). Back up data.key - lose it
     and the data is unrecoverable by design. That's the point: not even we can read it.
   - Install / update:  pip install -U obsideo-cli      More:  https://obsideo.io
@@ -937,7 +939,8 @@ class ObsideoShell(cmd.Cmd):
   A: No. They're encrypted on your device before upload; we only store ciphertext.
 
   Q: What's free?
-  A: 12 GB, no credit card, no expiry.
+  A: 8 GB, no credit card, no expiry. 16 GB after you answer eight questions in
+     the Drive web app.
 
   Q: What if I lose my key?
   A: Your key is ~/.obsideo/data.key - back it up. Without it the data can't be

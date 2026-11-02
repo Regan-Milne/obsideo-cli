@@ -502,7 +502,7 @@ def test_login_warns_before_minting_a_key_over_an_account_that_has_objects(monke
     monkeypatch.setattr(cli, "_fetch_account_info", lambda: {"object_count": 7})
     monkeypatch.setattr(cli, "_fetch_referral", lambda: None)
     monkeypatch.setattr(cli.storage, "reset_client", lambda: None)
-    monkeypatch.setattr(cli.login, "verify", lambda *a, **k: {"quota_gb": 12})
+    monkeypatch.setattr(cli.login, "verify", lambda *a, **k: {"quota_gb": 8})
 
     cli.run_login(email="x@example.com", code="123456")
     out = capsys.readouterr().out
@@ -518,7 +518,7 @@ def test_login_stays_quiet_for_a_genuinely_new_account(monkeypatch, capsys, tmp_
     monkeypatch.setattr(cli, "_fetch_account_info", lambda: {"object_count": 0})
     monkeypatch.setattr(cli, "_fetch_referral", lambda: None)
     monkeypatch.setattr(cli.storage, "reset_client", lambda: None)
-    monkeypatch.setattr(cli.login, "verify", lambda *a, **k: {"quota_gb": 12})
+    monkeypatch.setattr(cli.login, "verify", lambda *a, **k: {"quota_gb": 8})
 
     cli.run_login(email="x@example.com", code="123456")
     out = capsys.readouterr().out
