@@ -7,7 +7,7 @@ Your data lands on three providers (RF=3).
 
 ```
 pip install obsideo-cli
-obsideo login    # email -> 12 GB free
+obsideo login    # email -> 8 GB free
 obsideo          # open the shell
 ```
 
@@ -18,12 +18,13 @@ $ obsideo login
 Enter your email: you@example.com
 Check your email for a verification code.
 Enter verification code: 482913
-You're all set. 12 GB free.
+You're all set. 8 GB free.
 ```
 
 Login is handled by Obsideo's signup service at **`signup.obsideo.io`**: it emails
-you a one-time code and provisions your free tier. There's no password - just your
-email and a local key (see *How it works*).
+you a one-time code and provisions your free tier: 8 GB, no card, no expiry, and
+16 GB after you answer eight questions in the Drive web app. There's no password -
+just your email and a local key (see *How it works*).
 
 Then either drop into the shell or run one-shot commands:
 
@@ -44,7 +45,7 @@ obsideo:/trip/ get cat.jpg ./downloaded.jpg
 
 | Command | Description |
 |---|---|
-| `obsideo login` | Sign up / log in with your email (12 GB free) |
+| `obsideo login` | Sign up / log in with your email (8 GB free) |
 | `ls [path]` | List files and folders |
 | `cd <path>` / `pwd` | Move around / show location |
 | `put <local> [name]` | Encrypt + upload a file, or a whole folder (recursive). `--no-encrypt` to store as-is |
